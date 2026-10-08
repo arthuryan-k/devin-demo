@@ -2,6 +2,7 @@ package orderbook;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
@@ -10,14 +11,15 @@ import java.util.Map;
 
 import net.jqwik.api.Arbitraries;
 import net.jqwik.api.Arbitrary;
-import net.jqwik.api.Combinators;
 import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
 import net.jqwik.api.Tuple;
 
+import orderbook.Event.OrderAmended;
 import orderbook.Event.OrderCancelled;
 import orderbook.Event.OrderPlaced;
+import orderbook.Event.OrderRejected;
 import orderbook.Event.TradeExecuted;
 import orderbook.OrderBook.Level;
 
@@ -40,33 +42,30 @@ class MatchingEnginePropertiesTest {
         assertEquals(totals.submitted, totals.resting + totals.filled);
     }
 
+    /**
+     * Full command set (limit/market, GTC/IOC/FOK, participants, cancels, amends). On top of conservation and
+     * no-crossing: only GTC limits rest, an accepted FOK fills completely, rejected commands leave the book
+     * untouched, no trade pairs two orders of the same participant, and a priority-retaining amend keeps its seqNum.
+     */
+    @Property(tries = 500)
+    void invariantsHoldForFullCommandSet(@ForAll("allCommands") List<Command> commands) {
+        replayAndCheck(commands);
+    }
+
     @Provide
     Arbitrary<List<Command>> commandsWithCancels() {
-        return Arbitraries.frequencyOf(Tuple.of(4, places()), Tuple.of(1, cancels())).list().ofMaxSize(300);
+        return Arbitraries.frequencyOf(Tuple.of(4, CommandArbitraries.gtcLimitPlaces()),
+                Tuple.of(1, CommandArbitraries.cancels())).list().ofMaxSize(300);
     }
 
     @Provide
     Arbitrary<List<Command>> placesOnly() {
-        return places().list().ofMaxSize(300);
+        return CommandArbitraries.gtcLimitPlaces().list().ofMaxSize(300);
     }
 
-    private static Arbitrary<Long> ids() {
-        return Arbitraries.longs().between(1, 80);
-    }
-
-    private static Arbitrary<Command> places() {
-        Arbitrary<Long> prices = Arbitraries.frequencyOf(
-                Tuple.of(30, Arbitraries.longs().between(95, 105)),
-                Tuple.of(1, Arbitraries.longs().between(-3, 0)));
-        Arbitrary<Long> qtys = Arbitraries.frequencyOf(
-                Tuple.of(30, Arbitraries.longs().between(1, 100)),
-                Tuple.of(1, Arbitraries.longs().between(-3, 0)));
-        return Combinators.combine(ids(), Arbitraries.of(Side.class), prices, qtys)
-                .as((id, side, price, qty) -> new Command.Place(new Order(id, side, price, qty)));
-    }
-
-    private static Arbitrary<Command> cancels() {
-        return ids().map(Command.Cancel::new);
+    @Provide
+    Arbitrary<List<Command>> allCommands() {
+        return CommandArbitraries.allCommands(300);
     }
 
     private static final class Totals {
@@ -76,24 +75,66 @@ class MatchingEnginePropertiesTest {
         long resting;
     }
 
+    /** What the test knows about an accepted order, updated as events arrive. */
+    private static final class Tracked {
+        final Order request;
+        long submitted;
+        long price;
+        long seqNum;
+        long filled;
+        long cancelled;
+
+        Tracked(Order request, OrderPlaced placed) {
+            this.request = request;
+            this.submitted = placed.qty();
+            this.price = placed.price();
+            this.seqNum = placed.seqNum();
+        }
+    }
+
     private static Totals replayAndCheck(List<Command> commands) {
         MatchingEngine engine = new MatchingEngine();
         OrderBook book = engine.book();
-        Map<Long, OrderPlaced> placed = new HashMap<>();
-        Map<Long, Long> filled = new HashMap<>();
-        Map<Long, Long> cancelled = new HashMap<>();
+        Map<Long, Tracked> orders = new HashMap<>();
 
         for (Command command : commands) {
-            for (Event event : engine.process(command)) {
+            BookState before = BookState.of(book);
+            List<Event> events = engine.process(command);
+            for (Event event : events) {
                 if (event instanceof OrderPlaced p) {
-                    assertFalse(placed.containsKey(p.orderId()), "id accepted twice: " + p.orderId());
-                    placed.put(p.orderId(), p);
-                } else if (event instanceof TradeExecuted t) {
-                    checkTrade(t.trade(), placed);
-                    filled.merge(t.trade().makerOrderId(), t.trade().qty(), Long::sum);
-                    filled.merge(t.trade().takerOrderId(), t.trade().qty(), Long::sum);
+                    assertFalse(orders.containsKey(p.orderId()), "id accepted twice: " + p.orderId());
+                    orders.put(p.orderId(), new Tracked(((Command.Place) command).order(), p));
+                } else if (event instanceof OrderAmended a) {
+                    Tracked t = orders.get(a.orderId());
+                    assertEquals(t.price, a.oldPrice());
+                    if (a.priorityRetained()) {
+                        assertEquals(t.seqNum, a.seqNum(), "priority-retaining amend changed seqNum");
+                        assertEquals(a.oldPrice(), a.newPrice());
+                        assertTrue(a.newQty() <= a.oldQty());
+                    } else {
+                        assertTrue(a.seqNum() > t.seqNum);
+                    }
+                    t.submitted += a.newQty() - a.oldQty();
+                    t.price = a.newPrice();
+                    t.seqNum = a.seqNum();
+                } else if (event instanceof TradeExecuted e) {
+                    checkTrade(e.trade(), orders);
+                    orders.get(e.trade().makerOrderId()).filled += e.trade().qty();
+                    orders.get(e.trade().takerOrderId()).filled += e.trade().qty();
                 } else if (event instanceof OrderCancelled c) {
-                    cancelled.merge(c.orderId(), c.cancelledQty(), Long::sum);
+                    orders.get(c.orderId()).cancelled += c.cancelledQty();
+                } else if (event instanceof OrderRejected) {
+                    assertEquals(1, events.size(), "rejection must be the only event");
+                    assertEquals(before, BookState.of(book), "rejected command mutated the book");
+                }
+            }
+            if (command instanceof Command.Place place && events.get(0) instanceof OrderPlaced) {
+                Order request = place.order();
+                if (!(request.type() == OrderType.LIMIT && request.timeInForce() == TimeInForce.GTC)) {
+                    assertFalse(book.contains(request.id()), "non-GTC order rested: " + request);
+                }
+                if (request.timeInForce() == TimeInForce.FOK) {
+                    assertEquals(request.qtyRemaining(), orders.get(request.id()).filled, "FOK partially filled");
                 }
             }
             assertFalse(book.isCrossed(), "crossed book after " + command);
@@ -102,32 +143,37 @@ class MatchingEnginePropertiesTest {
         }
 
         Totals totals = new Totals();
-        for (OrderPlaced p : placed.values()) {
-            long resting = book.find(p.orderId()).map(Order::qtyRemaining).orElse(0L);
-            long f = filled.getOrDefault(p.orderId(), 0L);
-            long c = cancelled.getOrDefault(p.orderId(), 0L);
-            assertEquals(p.qty(), resting + f + c, "conservation violated for order " + p.orderId());
-            totals.submitted += p.qty();
+        for (Map.Entry<Long, Tracked> entry : orders.entrySet()) {
+            Tracked t = entry.getValue();
+            long resting = book.find(entry.getKey()).map(Order::qtyRemaining).orElse(0L);
+            assertEquals(t.submitted, resting + t.filled + t.cancelled,
+                    "conservation violated for order " + entry.getKey());
+            totals.submitted += t.submitted;
             totals.resting += resting;
-            totals.filled += f;
-            totals.cancelled += c;
+            totals.filled += t.filled;
+            totals.cancelled += t.cancelled;
         }
         assertEquals(totals.submitted, totals.resting + totals.filled + totals.cancelled);
         assertEquals(book.size(), book.orders(Side.BUY).size() + book.orders(Side.SELL).size());
         return totals;
     }
 
-    private static void checkTrade(Trade trade, Map<Long, OrderPlaced> placed) {
-        OrderPlaced maker = placed.get(trade.makerOrderId());
-        OrderPlaced taker = placed.get(trade.takerOrderId());
+    private static void checkTrade(Trade trade, Map<Long, Tracked> orders) {
+        Tracked maker = orders.get(trade.makerOrderId());
+        Tracked taker = orders.get(trade.takerOrderId());
         assertTrue(trade.qty() > 0);
-        assertEquals(maker.price(), trade.price(), "trade must execute at maker price");
-        assertTrue(maker.seqNum() < taker.seqNum(), "maker must have rested before taker");
-        assertTrue(maker.side() != taker.side());
-        if (taker.side() == Side.BUY) {
-            assertTrue(trade.price() <= taker.price());
-        } else {
-            assertTrue(trade.price() >= taker.price());
+        assertEquals(maker.price, trade.price(), "trade must execute at maker price");
+        assertTrue(maker.seqNum < taker.seqNum, "maker must have rested before taker");
+        assertTrue(maker.request.side() != taker.request.side());
+        if (taker.request.participantId() != Order.NO_PARTICIPANT) {
+            assertNotEquals(taker.request.participantId(), maker.request.participantId(), "self-trade executed");
+        }
+        if (taker.request.type() == OrderType.LIMIT) {
+            if (taker.request.side() == Side.BUY) {
+                assertTrue(trade.price() <= taker.price);
+            } else {
+                assertTrue(trade.price() >= taker.price);
+            }
         }
     }
 
