@@ -27,6 +27,20 @@ There's no I/O or networking, and it's single-threaded by design (none of the cl
 - There's one instrument per engine, and no persistence or event replay.
 - The set of accepted order IDs (used to reject duplicates) grows without bound.
 
+### Visual demo (browser UI)
+```
+mvn compile exec:java          # or: mvn compile exec:java -Dexec.args=9090
+```
+Then open http://localhost:8080/. The `orderbook.demo.DemoServer` wraps one `MatchingEngine` behind the JDK's
+built-in `HttpServer`. It handles requests one at a time on a single thread, so the engine stays single-threaded, and
+the core `orderbook` package still does no I/O. The page lets you place limit orders and cancel them (from the table,
+by ID, or by clicking an order in the chart). It shows the book as one bar per price level, with each bar split into
+one segment per resting order in FIFO order, plus cumulative depth, the spread, the last trade price, a trade tape,
+and an event log. "Seed book" and "Random order" generate test flow.
+
+JSON API: `GET /api/book`, `POST /api/orders` (form fields `side`, `price`, `qty`, optional `id`),
+`DELETE /api/orders/{id}`, `POST /api/reset`.
+
 ### Build and test
 ```
 mvn test

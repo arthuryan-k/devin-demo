@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order Book Demo</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #171e26; --border: #26313d; --text: #d7dee6; --muted: #7d8b99;
+    --bid: #22c55e; --bid-dim: #15803d; --ask: #ef4444; --ask-dim: #b91c1c; --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 24px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  .stat { display: flex; flex-direction: column; }
+  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .stat .value { font-size: 18px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .bid { color: var(--bid); } .ask { color: var(--ask); }
+  main { display: grid; grid-template-columns: 300px 1fr; gap: 16px; padding: 16px 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; min-width: 0; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .side-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+  .side-toggle button { padding: 8px; border: 1px solid var(--border); background: transparent; color: var(--muted); border-radius: 6px; cursor: pointer; font-weight: 600; }
+  .side-toggle button.active[data-side=BUY] { background: var(--bid-dim); color: #fff; border-color: var(--bid); }
+  .side-toggle button.active[data-side=SELL] { background: var(--ask-dim); color: #fff; border-color: var(--ask); }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  input { width: 100%; padding: 7px 9px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; font: inherit; font-variant-numeric: tabular-nums; }
+  input:focus { outline: 1px solid var(--accent); }
+  button.primary { width: 100%; margin-top: 12px; padding: 9px; border: 0; border-radius: 6px; font-weight: 600; cursor: pointer; color: #fff; }
+  button.primary.BUY { background: var(--bid-dim); } button.primary.SELL { background: var(--ask-dim); }
+  .row-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 10px; }
+  .row-buttons button, button.small { padding: 6px 8px; border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .row-buttons button:hover, button.small:hover { border-color: var(--accent); }
+  #chart-wrap { position: relative; }
+  #chart { width: 100%; height: 400px; display: block; }
+  #chart rect.order { cursor: pointer; }
+  #chart rect.order:hover { stroke: #fff; stroke-width: 2; }
+  #tooltip { position: absolute; pointer-events: none; background: #0b0f14; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; display: none; white-space: nowrap; z-index: 10; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; background: var(--c); }
+  .bottom { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 16px; padding: 0 20px 20px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  td { padding: 4px 6px; border-bottom: 1px solid #1d2630; }
+  tr.hl td { background: #1f2a36; }
+  .scroll { max-height: 260px; overflow-y: auto; }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+  #log div { padding: 3px 0; border-bottom: 1px solid #1d2630; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #log .OrderRejected, #log .error { color: #fca5a5; }
+  #log .TradeExecuted { color: #fde68a; }
+  #log .OrderCancelled { color: var(--muted); }
+  @media (max-width: 1000px) { main, .bottom { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Order Book Demo</h1>
+  <div class="stat"><span class="label">Best bid</span><span class="value bid" id="s-bid">–</span></div>
+  <div class="stat"><span class="label">Best ask</span><span class="value ask" id="s-ask">–</span></div>
+  <div class="stat"><span class="label">Spread</span><span class="value" id="s-spread">–</span></div>
+  <div class="stat"><span class="label">Resting orders</span><span class="value" id="s-resting">0</span></div>
+  <div class="stat"><span class="label">Trades</span><span class="value" id="s-trades">0</span></div>
+  <div class="stat"><span class="label">Volume</span><span class="value" id="s-volume">0</span></div>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Place limit order</h2>
+    <form id="ticket" autocomplete="off">
+      <div class="side-toggle">
+        <button type="button" data-side="BUY" class="active">BUY</button>
+        <button type="button" data-side="SELL">SELL</button>
+      </div>
+      <label for="price">Price (ticks)</label>
+      <input id="price" name="price" type="number" step="1" value="100" required>
+      <label for="qty">Quantity</label>
+      <input id="qty" name="qty" type="number" step="1" value="10" required>
+      <label for="oid">Order ID <span id="next-id">(blank = auto)</span></label>
+      <input id="oid" name="id" type="number" step="1" placeholder="auto">
+      <button type="submit" class="primary BUY" id="submit">Place BUY</button>
+    </form>
+    <h2 style="margin-top:18px">Cancel order</h2>
+    <form id="cancel-form" autocomplete="off" style="display:flex; gap:6px">
+      <input id="cancel-id" type="number" step="1" placeholder="order id" required>
+      <button type="submit" class="small">Cancel</button>
+    </form>
+    <h2 style="margin-top:18px">Helpers</h2>
+    <div class="row-buttons">
+      <button type="button" id="seed" title="Add ~20 non-crossing orders around 100">Seed book</button>
+      <button type="button" id="random" title="Place one random order near the mid; may cross">Random order</button>
+      <button type="button" id="reset" title="Start over with an empty engine">Reset</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Book depth — one bar per price level, one segment per resting order (FIFO bottom → top). Click a segment to cancel it.</h2>
+    <div id="chart-wrap">
+      <svg id="chart"></svg>
+      <div id="tooltip"></div>
+    </div>
+    <div class="legend">
+      <span style="--c: var(--bid)">Bids (resting buy orders)</span>
+      <span style="--c: var(--ask)">Asks (resting sell orders)</span>
+      <span style="--c: rgba(96,165,250,.5)">Cumulative depth (right axis)</span>
+      <span style="--c: #fde68a">Last trade price</span>
+    </div>
+  </section>
+</main>
+
+<div class="bottom">
+  <section class="panel">
+    <h2>Resting orders</h2>
+    <div class="scroll" id="orders"></div>
+  </section>
+  <section class="panel">
+    <h2>Trades (newest first)</h2>
+    <div class="scroll" id="trades"></div>
+  </section>
+  <section class="panel">
+    <h2>Event log</h2>
+    <div class="scroll" id="log"></div>
+  </section>
+</div>
+
+<script>
+"use strict";
+let side = "BUY";
+let book = null;
+let highlightId = null;
+const $ = id => document.getElementById(id);
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+async function api(method, url, body) {
+  const opts = { method };
+  if (body) {
+    opts.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+    opts.body = new URLSearchParams(body);
+  }
+  const res = await fetch(url, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+  return data;
+}
+
+function logLine(cls, text) {
+  const div = document.createElement("div");
+  div.className = cls;
+  div.textContent = text;
+  $("log").prepend(div);
+  while ($("log").childElementCount > 200) $("log").lastChild.remove();
+}
+
+function logEvents(events) {
+  for (const e of events) {
+    switch (e.type) {
+      case "OrderPlaced": logLine(e.type, `PLACED   #${e.orderId} ${e.side} ${e.qty} @ ${e.price}`); break;
+      case "TradeExecuted": logLine(e.type, `TRADE    ${e.trade.qty} @ ${e.trade.price} (maker #${e.trade.makerOrderId}, taker #${e.trade.takerOrderId})`); break;
+      case "OrderCancelled": logLine(e.type, `CANCEL   #${e.orderId} (${e.cancelledQty} remaining)`); break;
+      case "OrderRejected": logLine(e.type, `REJECTED #${e.orderId}: ${e.reason}`); break;
+    }
+  }
+}
+
+async function run(action) {
+  try {
+    const data = await action();
+    if (data.events) logEvents(data.events);
+    render(data.book || data);
+    return data;
+  } catch (err) {
+    logLine("error", "ERROR    " + err.message);
+  }
+}
+
+const place = (s, price, qty, id) => run(() => api("POST", "/api/orders", { side: s, price, qty, id: id ?? "" }));
+const cancel = id => run(() => api("DELETE", "/api/orders/" + encodeURIComponent(id)));
+
+function render(b) {
+  book = b;
+  $("s-bid").textContent = b.bestBid ?? "–";
+  $("s-ask").textContent = b.bestAsk ?? "–";
+  $("s-spread").textContent = b.spread ?? "–";
+  const resting = [...b.bids, ...b.asks].reduce((n, l) => n + l.orders.length, 0);
+  $("s-resting").textContent = resting;
+  $("s-trades").textContent = b.tradeCount;
+  $("s-volume").textContent = b.tradedVolume;
+  $("next-id").textContent = `(blank = auto, next #${b.nextOrderId})`;
+  renderOrders(b);
+  renderTrades(b);
+  renderChart(b);
+}
+
+function renderOrders(b) {
+  const rows = [];
+  for (const [s, levels] of [["BUY", b.bids], ["SELL", b.asks]]) {
+    for (const level of levels) {
+      level.orders.forEach((o, i) => rows.push({ side: s, price: level.price, pos: i + 1, ...o }));
+    }
+  }
+  if (!rows.length) { $("orders").innerHTML = '<div class="empty">No resting orders</div>'; return; }
+  const cls = s => s === "BUY" ? "bid" : "ask";
+  $("orders").innerHTML = `<table><thead><tr><th>Side</th><th>ID</th><th>Price</th><th>Qty</th><th>Queue pos</th><th>Seq</th><th></th></tr></thead><tbody>` +
+    rows.map(r => `<tr data-id="${r.id}" class="${r.id === highlightId ? "hl" : ""}"><td class="${cls(r.side)}">${r.side}</td><td>#${r.id}</td><td>${r.price}</td><td>${r.qty}</td><td>${r.pos}</td><td>${r.seqNum}</td>` +
+      `<td><button class="small" data-cancel="${r.id}">Cancel</button></td></tr>`).join("") + "</tbody></table>";
+}
+
+function renderTrades(b) {
+  if (!b.trades.length) { $("trades").innerHTML = '<div class="empty">No trades yet</div>'; return; }
+  $("trades").innerHTML = "<table><thead><tr><th>Price</th><th>Qty</th><th>Maker</th><th>Taker</th></tr></thead><tbody>" +
+    b.trades.map(t => `<tr><td>${t.price}</td><td>${t.qty}</td><td>#${t.makerOrderId}</td><td>#${t.takerOrderId}</td></tr>`).join("") + "</tbody></table>";
+}
+
+function el(name, attrs, text) {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 4, 8, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+
+function renderChart(b) {
+  const svg = $("chart");
+  svg.replaceChildren();
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 400;
+  const m = { l: 50, r: 56, t: 16, b: 34 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const levels = [...b.bids.map(l => ({ ...l, side: "BUY" })), ...b.asks.map(l => ({ ...l, side: "SELL" }))];
+  const lastPrice = b.trades.length ? b.trades[0].price : null;
+
+  if (!levels.length) {
+    svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "#7d8b99" }, "Book is empty — place an order or click “Seed book”."));
+    return;
+  }
+
+  const prices = levels.map(l => l.price);
+  if (lastPrice !== null) prices.push(lastPrice);
+  const minP = Math.min(...prices) - 1, maxP = Math.max(...prices) + 1;
+  const n = maxP - minP + 1;
+  const step = pw / n;
+  const barW = Math.max(1, Math.min(step * 0.78, 60));
+  const xc = p => m.l + (p - minP + 0.5) * step;
+
+  const yMax = niceMax(Math.max(...levels.map(l => l.totalQty)) * 1.1);
+  const y = q => m.t + ph - (q / yMax) * ph;
+
+  let cumBid = 0, cumAsk = 0;
+  const bidCum = b.bids.map(l => ({ price: l.price, cum: (cumBid += l.totalQty) }));
+  const askCum = b.asks.map(l => ({ price: l.price, cum: (cumAsk += l.totalQty) }));
+  const cMax = niceMax(Math.max(cumBid, cumAsk) * 1.1);
+  const yc = q => m.t + ph - (q / cMax) * ph;
+
+  for (let i = 0; i <= 4; i++) {
+    const v = yMax * i / 4, yy = y(v);
+    svg.append(el("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: "#26313d" }));
+    svg.append(el("text", { x: m.l - 8, y: yy + 4, "text-anchor": "end", fill: "#7d8b99", "font-size": 11 }, +v.toFixed(1)));
+    svg.append(el("text", { x: m.l + pw + 8, y: yy + 4, fill: "rgba(96,165,250,.8)", "font-size": 11 }, +(cMax * i / 4).toFixed(1)));
+  }
+  svg.append(el("text", { x: 12, y: m.t + ph / 2, fill: "#7d8b99", "font-size": 11, transform: `rotate(-90 12 ${m.t + ph / 2})`, "text-anchor": "middle" }, "qty at level"));
+
+  if (b.bestBid !== null && b.bestAsk !== null) {
+    const x1 = xc(b.bestBid) + step / 2, x2 = xc(b.bestAsk) - step / 2;
+    if (x2 > x1) svg.append(el("rect", { x: x1, y: m.t, width: x2 - x1, height: ph, fill: "rgba(96,165,250,.06)" }));
+    svg.append(el("text", { x: (xc(b.bestBid) + xc(b.bestAsk)) / 2, y: m.t + 12, "text-anchor": "middle", fill: "#60a5fa", "font-size": 11 }, `spread ${b.spread}`));
+  }
+
+  const labelEvery = Math.max(1, Math.ceil(n / Math.max(1, pw / 44)));
+  for (let p = minP; p <= maxP; p++) {
+    if ((p - minP) % labelEvery !== 0) continue;
+    svg.append(el("line", { x1: xc(p), x2: xc(p), y1: m.t + ph, y2: m.t + ph + 4, stroke: "#4b5563" }));
+    svg.append(el("text", { x: xc(p), y: m.t + ph + 17, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, p));
+  }
+  svg.append(el("text", { x: m.l + pw / 2, y: H - 2, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, "price (ticks)"));
+  svg.append(el("line", { x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph, stroke: "#4b5563" }));
+
+  if (lastPrice !== null) {
+    svg.append(el("line", { x1: xc(lastPrice), x2: xc(lastPrice), y1: m.t, y2: m.t + ph, stroke: "#fde68a", "stroke-dasharray": "2 3", "pointer-events": "none" }));
+    svg.append(el("text", { x: xc(lastPrice) + 4, y: m.t + 26, fill: "#fde68a", "font-size": 11 }, `last ${lastPrice}`));
+  }
+
+  for (const level of levels) {
+    const isBid = level.side === "BUY";
+    let base = 0;
+    level.orders.forEach((o, i) => {
+      const top = base + o.qty;
+      const rect = el("rect", {
+        class: "order", x: xc(level.price) - barW / 2, y: y(top), width: barW, height: Math.max(1, y(base) - y(top)),
+        fill: isBid ? (i % 2 ? "#16a34a" : "#22c55e") : (i % 2 ? "#dc2626" : "#ef4444"),
+        stroke: o.id === highlightId ? "#fff" : "#171e26", "stroke-width": o.id === highlightId ? 2 : 1,
+        "data-id": o.id, "data-side": level.side, "data-price": level.price, "data-qty": o.qty, "data-pos": i + 1,
+        "data-count": level.orders.length, "data-total": level.totalQty, "data-seq": o.seqNum
+      });
+      svg.append(rect);
+      base = top;
+    });
+    if (barW >= 16) {
+      svg.append(el("text", { x: xc(level.price), y: y(level.totalQty) - 4, "text-anchor": "middle", fill: isBid ? "#86efac" : "#fca5a5", "font-size": 10 }, level.totalQty));
+    }
+  }
+
+  const stepPath = (pts, dir) => {
+    if (!pts.length) return "";
+    let d = `M ${xc(pts[0].price) - dir * step / 2} ${yc(0)} L ${xc(pts[0].price) - dir * step / 2} ${yc(pts[0].cum)}`;
+    pts.forEach((pt, i) => {
+      const xEnd = i + 1 < pts.length ? xc(pts[i + 1].price) - dir * step / 2 : xc(pt.price) + dir * step / 2;
+      d += ` L ${xEnd} ${yc(pt.cum)}`;
+      if (i + 1 < pts.length) d += ` L ${xEnd} ${yc(pts[i + 1].cum)}`;
+    });
+    return d;
+  };
+  for (const [pts, dir, color] of [[bidCum, -1, "rgba(34,197,94,.55)"], [askCum, 1, "rgba(239,68,68,.55)"]]) {
+    if (pts.length) svg.append(el("path", { d: stepPath(pts, dir), fill: "none", stroke: color, "stroke-width": 1.5, "stroke-dasharray": "5 3", "pointer-events": "none" }));
+  }
+
+}
+
+function setSide(s) {
+  side = s;
+  document.querySelectorAll(".side-toggle button").forEach(b => b.classList.toggle("active", b.dataset.side === s));
+  $("submit").className = "primary " + s;
+  $("submit").textContent = "Place " + s;
+}
+
+function setHighlight(id) {
+  if (highlightId === id) return;
+  highlightId = id;
+  if (book) { renderOrders(book); renderChart(book); }
+}
+
+document.querySelectorAll(".side-toggle button").forEach(b => b.addEventListener("click", () => setSide(b.dataset.side)));
+
+$("ticket").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  await place(side, $("price").value, $("qty").value, $("oid").value);
+  $("oid").value = "";
+});
+
+$("cancel-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  await cancel($("cancel-id").value);
+  $("cancel-id").value = "";
+});
+
+$("orders").addEventListener("click", ev => {
+  const id = ev.target.dataset.cancel;
+  if (id) cancel(id);
+});
+$("orders").addEventListener("mouseover", ev => {
+  const tr = ev.target.closest("tr[data-id]");
+  if (tr) setHighlight(Number(tr.dataset.id));
+});
+$("orders").addEventListener("mouseleave", () => setHighlight(null));
+
+const tooltip = $("tooltip");
+$("chart").addEventListener("mousemove", ev => {
+  const d = ev.target.dataset;
+  if (!d || !d.id) { tooltip.style.display = "none"; return; }
+  tooltip.innerHTML = `<b class="${d.side === "BUY" ? "bid" : "ask"}">${d.side} #${d.id}</b><br>` +
+    `${d.qty} @ ${d.price} &nbsp;·&nbsp; seq ${d.seq}<br>queue position ${d.pos} of ${d.count} (level total ${d.total})<br>` +
+    `<span style="color:#7d8b99">click to cancel</span>`;
+  const wrap = $("chart-wrap").getBoundingClientRect();
+  tooltip.style.display = "block";
+  const left = Math.min(ev.clientX - wrap.left + 14, wrap.width - tooltip.offsetWidth - 4);
+  tooltip.style.left = left + "px";
+  tooltip.style.top = (ev.clientY - wrap.top + 14) + "px";
+});
+$("chart").addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+$("chart").addEventListener("click", ev => {
+  const id = ev.target.dataset && ev.target.dataset.id;
+  if (id) { tooltip.style.display = "none"; cancel(id); }
+});
+
+$("reset").addEventListener("click", async () => {
+  await run(() => api("POST", "/api/reset", {}));
+  $("log").replaceChildren();
+  logLine("", "RESET    engine cleared");
+});
+
+$("seed").addEventListener("click", async () => {
+  const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+  const bid = book && book.bestBid !== null ? book.bestBid : (book && book.bestAsk !== null ? book.bestAsk - 1 : 99);
+  const ask = book && book.bestAsk !== null ? book.bestAsk : bid + 2;
+  for (let i = 0; i < 10; i++) {
+    await place("BUY", bid - rnd(0, 6), rnd(1, 10) * 5);
+    await place("SELL", ask + rnd(0, 6), rnd(1, 10) * 5);
+  }
+});
+
+$("random").addEventListener("click", () => {
+  const mid = book && book.bestBid !== null && book.bestAsk !== null ? Math.round((book.bestBid + book.bestAsk) / 2)
+    : (book && (book.bestBid ?? book.bestAsk)) || 100;
+  const s = Math.random() < 0.5 ? "BUY" : "SELL";
+  const price = mid + Math.floor(Math.random() * 9) - 4;
+  place(s, price, (1 + Math.floor(Math.random() * 12)) * 5);
+});
+
+window.addEventListener("resize", () => book && renderChart(book));
+run(() => api("GET", "/api/book"));
+</script>
+</body>
+</html>
