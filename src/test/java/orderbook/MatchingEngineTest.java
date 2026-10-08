@@ -10,7 +10,9 @@ import java.util.OptionalLong;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import orderbook.Event.OrderAmended;
 import orderbook.Event.OrderCancelled;
+import orderbook.Event.OrderCancelled.CancelReason;
 import orderbook.Event.OrderPlaced;
 import orderbook.Event.OrderRejected;
 import orderbook.Event.OrderRejected.Reason;
@@ -34,6 +36,18 @@ class MatchingEngineTest {
 
     private List<Event> sell(long id, long price, long qty) {
         return engine.process(new Command.Place(new Order(id, Side.SELL, price, qty)));
+    }
+
+    private List<Event> place(Order order) {
+        return engine.process(new Command.Place(order));
+    }
+
+    private List<Event> amend(long id, Long price, Long qty) {
+        return engine.process(new Command.Amend(id, price, qty));
+    }
+
+    private List<Long> ids(Side side) {
+        return book.orders(side).stream().map(Order::id).toList();
     }
 
     private static List<Trade> trades(List<Event> events) {
@@ -273,5 +287,318 @@ class MatchingEngineTest {
         Order b = new Order(7, Side.SELL, 200, 99);
         assertEquals(a, b);
         assertEquals(a.hashCode(), b.hashCode());
+    }
+
+    // ---- amend / replace ----
+
+    @Test
+    void amendQuantityDecreaseKeepsFifoPosition() {
+        sell(1, 100, 10);
+        sell(2, 100, 10);
+        sell(3, 100, 10);
+
+        assertEquals(List.of(new OrderAmended(1, 100, 100, 10, 4, 0, true)), amend(1, null, 4L));
+        assertEquals(List.of(1L, 2L, 3L), ids(Side.SELL));
+        assertEquals(0, book.find(1).orElseThrow().seqNum());
+        assertEquals(new Level(100, 24, 3), book.depth(Side.SELL, 1).get(0));
+
+        assertEquals(List.of(new Trade(1, 4, 100, 4), new Trade(2, 4, 100, 2)), trades(buy(4, 100, 6)));
+    }
+
+    @Test
+    void amendQuantityIncreaseLosesPriority() {
+        sell(1, 100, 10);
+        sell(2, 100, 10);
+        sell(3, 100, 10);
+
+        assertEquals(List.of(new OrderAmended(1, 100, 100, 10, 20, 3, false)), amend(1, null, 20L));
+        assertEquals(List.of(2L, 3L, 1L), ids(Side.SELL));
+        assertEquals(List.of(new Trade(2, 4, 100, 10), new Trade(3, 4, 100, 5)), trades(buy(4, 100, 15)));
+    }
+
+    @Test
+    void amendPriceChangeLosesPriorityEvenWithQuantityDecrease() {
+        sell(1, 100, 10);
+        sell(2, 101, 10);
+
+        assertEquals(List.of(new OrderAmended(1, 100, 101, 10, 5, 2, false)), amend(1, 101L, 5L));
+        assertEquals(List.of(2L, 1L), ids(Side.SELL));
+        assertEquals(List.of(new Level(101, 15, 2)), book.depth(Side.SELL, 5));
+    }
+
+    @Test
+    void amendPriceBackToOriginalLevelGoesToBackOfQueue() {
+        buy(1, 100, 10);
+        buy(2, 100, 10);
+
+        amend(1, 99L, null);
+        amend(1, 100L, null);
+
+        assertEquals(List.of(2L, 1L), ids(Side.BUY));
+    }
+
+    @Test
+    void amendWithNoChangeKeepsPriority() {
+        buy(1, 100, 10);
+        buy(2, 100, 10);
+
+        assertEquals(List.of(new OrderAmended(1, 100, 100, 10, 10, 0, true)), amend(1, 100L, 10L));
+        assertEquals(List.of(new OrderAmended(1, 100, 100, 10, 10, 0, true)), amend(1, null, null));
+        assertEquals(List.of(1L, 2L), ids(Side.BUY));
+    }
+
+    @Test
+    void amendQuantityIsRemainingQuantityOfPartiallyFilledOrder() {
+        sell(1, 100, 10);
+        buy(2, 100, 4);
+
+        assertEquals(List.of(new OrderAmended(1, 100, 100, 6, 3, 0, true)), amend(1, null, 3L));
+        assertEquals(3, resting(1));
+    }
+
+    @Test
+    void amendToCrossingPriceMatchesAsAggressor() {
+        buy(1, 99, 10);
+        sell(2, 101, 4);
+
+        List<Event> events = amend(1, 101L, null);
+
+        assertEquals(new OrderAmended(1, 99, 101, 10, 10, 2, false), events.get(0));
+        assertEquals(List.of(new Trade(2, 1, 101, 4)), trades(events));
+        assertEquals(6, resting(1));
+        assertEquals(OptionalLong.of(101), book.bestBid());
+        assertTrue(book.bestAsk().isEmpty());
+    }
+
+    @Test
+    void amendRejectsUnknownFilledOrCancelledIdAndInvalidValues() {
+        sell(1, 100, 10);
+        buy(2, 100, 10);
+        buy(3, 90, 10);
+        engine.cancel(3);
+        buy(4, 95, 10);
+        BookState before = BookState.of(book);
+
+        assertEquals(List.of(new OrderRejected(42, Reason.UNKNOWN_ORDER_ID)), amend(42, 100L, null));
+        assertEquals(List.of(new OrderRejected(1, Reason.UNKNOWN_ORDER_ID)), amend(1, null, 5L));
+        assertEquals(List.of(new OrderRejected(3, Reason.UNKNOWN_ORDER_ID)), amend(3, null, 5L));
+        assertEquals(List.of(new OrderRejected(4, Reason.NON_POSITIVE_QUANTITY)), amend(4, null, 0L));
+        assertEquals(List.of(new OrderRejected(4, Reason.NON_POSITIVE_QUANTITY)), amend(4, 96L, -1L));
+        assertEquals(List.of(new OrderRejected(4, Reason.NON_POSITIVE_PRICE)), amend(4, 0L, null));
+        assertEquals(List.of(new OrderRejected(4, Reason.NON_POSITIVE_PRICE)), amend(4, -5L, 5L));
+        assertEquals(before, BookState.of(book));
+    }
+
+    // ---- market / IOC / FOK ----
+
+    @Test
+    void marketOrderSweepsAllLevelsAtAnyPrice() {
+        sell(1, 101, 10);
+        sell(2, 105, 10);
+        sell(3, 102, 10);
+
+        List<Event> events = place(Order.market(4, 0, Side.BUY, 25));
+
+        assertEquals(new OrderPlaced(4, Side.BUY, 0, 25, 3), events.get(0));
+        assertEquals(List.of(new Trade(1, 4, 101, 10), new Trade(3, 4, 102, 10), new Trade(2, 4, 105, 5)),
+                trades(events));
+        assertEquals(4, events.size());
+        assertFalse(book.contains(4));
+        assertEquals(List.of(new Level(105, 5, 1)), book.depth(Side.SELL, 5));
+    }
+
+    @Test
+    void marketOrderRemainderIsCancelledAndNeverRests() {
+        buy(1, 100, 10);
+        buy(2, 90, 5);
+
+        List<Event> events = place(Order.market(3, 0, Side.SELL, 30));
+
+        assertEquals(List.of(new Trade(1, 3, 100, 10), new Trade(2, 3, 90, 5)), trades(events));
+        assertEquals(new OrderCancelled(3, 15, CancelReason.UNFILLED_REMAINDER), events.get(events.size() - 1));
+        assertTrue(book.isEmpty());
+    }
+
+    @Test
+    void marketOrderOnEmptyBookIsCancelledInFull() {
+        assertEquals(List.of(new OrderPlaced(1, Side.BUY, 0, 10, 0),
+                        new OrderCancelled(1, 10, CancelReason.UNFILLED_REMAINDER)),
+                place(Order.market(1, 0, Side.BUY, 10)));
+        assertTrue(book.isEmpty());
+    }
+
+    @Test
+    void marketOrderIgnoresPriceAndGtc() {
+        sell(1, 100, 5);
+        List<Event> events = place(new Order(2, 0, Side.BUY, OrderType.MARKET, TimeInForce.GTC, -7, 8));
+
+        assertEquals(new OrderPlaced(2, Side.BUY, 0, 8, 1), events.get(0));
+        assertEquals(List.of(new Trade(1, 2, 100, 5)), trades(events));
+        assertEquals(new OrderCancelled(2, 3, CancelReason.UNFILLED_REMAINDER), events.get(2));
+        assertTrue(book.isEmpty());
+    }
+
+    @Test
+    void marketOrderStillRejectsNonPositiveQuantity() {
+        assertEquals(List.of(new OrderRejected(1, Reason.NON_POSITIVE_QUANTITY)),
+                place(Order.market(1, 0, Side.BUY, 0)));
+    }
+
+    @Test
+    void iocCrossesLikeLimitAndCancelsRemainder() {
+        sell(1, 100, 10);
+        sell(2, 102, 10);
+
+        List<Event> events = place(Order.limit(3, 0, Side.BUY, 101, 25, TimeInForce.IOC));
+
+        assertEquals(List.of(new OrderPlaced(3, Side.BUY, 101, 25, 2),
+                new TradeExecuted(new Trade(1, 3, 100, 10)),
+                new OrderCancelled(3, 15, CancelReason.UNFILLED_REMAINDER)), events);
+        assertTrue(book.bestBid().isEmpty());
+        assertEquals(List.of(new Level(102, 10, 1)), book.depth(Side.SELL, 5));
+    }
+
+    @Test
+    void nonCrossingIocIsCancelledEntirely() {
+        sell(1, 100, 10);
+        List<Event> events = place(Order.limit(2, 0, Side.BUY, 99, 5, TimeInForce.IOC));
+
+        assertEquals(List.of(new OrderPlaced(2, Side.BUY, 99, 5, 1),
+                new OrderCancelled(2, 5, CancelReason.UNFILLED_REMAINDER)), events);
+        assertEquals(1, book.size());
+    }
+
+    @Test
+    void fullyFilledIocEmitsNoCancel() {
+        sell(1, 100, 10);
+        List<Event> events = place(Order.limit(2, 0, Side.BUY, 100, 10, TimeInForce.IOC));
+
+        assertEquals(2, events.size());
+        assertTrue(book.isEmpty());
+    }
+
+    @Test
+    void fokFillsFullyAcrossLevels() {
+        sell(1, 100, 10);
+        sell(2, 101, 10);
+
+        List<Event> events = place(Order.limit(3, 0, Side.BUY, 101, 15, TimeInForce.FOK));
+
+        assertEquals(new OrderPlaced(3, Side.BUY, 101, 15, 2), events.get(0));
+        assertEquals(List.of(new Trade(1, 3, 100, 10), new Trade(2, 3, 101, 5)), trades(events));
+        assertEquals(3, events.size());
+        assertEquals(5, resting(2));
+    }
+
+    @Test
+    void fokThatCannotFillIsRejectedWithNoTradesAndNoBookMutation() {
+        sell(1, 100, 10);
+        sell(2, 101, 10);
+        sell(3, 102, 50);
+        BookState before = BookState.of(book);
+        long seqBefore = engine.nextSeqNum();
+
+        assertEquals(List.of(new OrderRejected(4, Reason.FOK_NOT_FILLABLE)),
+                place(Order.limit(4, 0, Side.BUY, 101, 25, TimeInForce.FOK)));
+
+        assertEquals(before, BookState.of(book));
+        assertEquals(seqBefore, engine.nextSeqNum());
+        assertEquals(new OrderPlaced(4, Side.BUY, 101, 5, seqBefore), buy(4, 101, 5).get(0));
+    }
+
+    @Test
+    void marketFokIsAllOrNothing() {
+        sell(1, 100, 10);
+        sell(2, 150, 10);
+        BookState before = BookState.of(book);
+
+        assertEquals(List.of(new OrderRejected(3, Reason.FOK_NOT_FILLABLE)),
+                place(Order.market(3, 0, Side.BUY, 21, TimeInForce.FOK)));
+        assertEquals(before, BookState.of(book));
+
+        List<Event> events = place(Order.market(4, 0, Side.BUY, 20, TimeInForce.FOK));
+        assertEquals(List.of(new Trade(1, 4, 100, 10), new Trade(2, 4, 150, 10)), trades(events));
+        assertTrue(book.isEmpty());
+    }
+
+    @Test
+    void fokBlockedBySelfTradePreventionIsRejected() {
+        place(Order.limit(1, 7, Side.SELL, 100, 10));
+        place(Order.limit(2, 8, Side.SELL, 100, 10));
+        BookState before = BookState.of(book);
+
+        assertEquals(List.of(new OrderRejected(3, Reason.FOK_NOT_FILLABLE)),
+                place(Order.limit(3, 7, Side.BUY, 100, 10, TimeInForce.FOK)));
+        assertEquals(before, BookState.of(book));
+    }
+
+    // ---- self-trade prevention ----
+
+    @Test
+    void selfTradeCancelsTakerAndLeavesMaker() {
+        place(Order.limit(1, 7, Side.SELL, 100, 10));
+
+        List<Event> events = place(Order.limit(2, 7, Side.BUY, 100, 5));
+
+        assertEquals(List.of(new OrderPlaced(2, Side.BUY, 100, 5, 1),
+                new OrderCancelled(2, 5, CancelReason.SELF_TRADE_PREVENTION)), events);
+        assertEquals(10, resting(1));
+        assertFalse(book.contains(2));
+    }
+
+    @Test
+    void selfTradeStopsMatchingAfterEarlierFills() {
+        place(Order.limit(1, 8, Side.SELL, 100, 5));
+        place(Order.limit(2, 7, Side.SELL, 100, 10));
+        place(Order.limit(3, 8, Side.SELL, 101, 10));
+
+        List<Event> events = place(Order.limit(4, 7, Side.BUY, 101, 20));
+
+        assertEquals(List.of(new Trade(1, 4, 100, 5)), trades(events));
+        assertEquals(new OrderCancelled(4, 15, CancelReason.SELF_TRADE_PREVENTION), events.get(events.size() - 1));
+        assertEquals(List.of(2L, 3L), ids(Side.SELL));
+        assertTrue(book.bestBid().isEmpty());
+    }
+
+    @Test
+    void selfTradePreventionAppliesToMarketOrders() {
+        place(Order.limit(1, 7, Side.BUY, 100, 10));
+        List<Event> events = place(Order.market(2, 7, Side.SELL, 10));
+
+        assertEquals(new OrderCancelled(2, 10, CancelReason.SELF_TRADE_PREVENTION), events.get(1));
+        assertEquals(10, resting(1));
+    }
+
+    @Test
+    void selfTradePreventionAppliesToAmendReentry() {
+        place(Order.limit(1, 7, Side.BUY, 99, 10));
+        place(Order.limit(2, 7, Side.SELL, 101, 10));
+
+        List<Event> events = amend(1, 101L, null);
+
+        assertEquals(List.of(new OrderAmended(1, 99, 101, 10, 10, 2, false),
+                new OrderCancelled(1, 10, CancelReason.SELF_TRADE_PREVENTION)), events);
+        assertEquals(List.of(), ids(Side.BUY));
+        assertEquals(List.of(2L), ids(Side.SELL));
+    }
+
+    @Test
+    void differentAndAnonymousParticipantsTrade() {
+        place(Order.limit(1, 7, Side.SELL, 100, 10));
+        assertEquals(List.of(new Trade(1, 2, 100, 4)), trades(place(Order.limit(2, 8, Side.BUY, 100, 4))));
+
+        sell(3, 100, 10);
+        assertEquals(List.of(new Trade(1, 4, 100, 6), new Trade(3, 4, 100, 4)), trades(buy(4, 100, 10)));
+    }
+
+    // ---- counters ----
+
+    @Test
+    void nextOrderIdIsDerivedFromMaxSeenPlaceId() {
+        assertEquals(1, engine.nextOrderId());
+        buy(5, 100, 10);
+        buy(9, 100, 0);
+        engine.cancel(50);
+        assertEquals(10, engine.nextOrderId());
     }
 }

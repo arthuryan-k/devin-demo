@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
@@ -139,6 +140,11 @@ public final class OrderBook {
         }
         orderIndex.remove(order.id());
         return order;
+    }
+
+    /** Lazily walks resting orders on {@code side} in priority order (best price first, then FIFO). */
+    Iterator<Order> priorityIterator(Side side) {
+        return levels(side).values().stream().flatMap(Deque::stream).iterator();
     }
 
     private NavigableMap<Long, Deque<Order>> levels(Side side) {
