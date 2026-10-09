@@ -140,6 +140,37 @@ class AccountTest {
     }
 
     @Test
+    void sessionPnlSplitsIntoRealizedAndUnrealizedAtAverageCost() {
+        Account a = new Account(YOU, 1_000_00, 0);
+        other(a, limit(OTHER, Side.SELL, 10_00, 10));
+        assertTrue(user(a, limit(YOU, Side.BUY, 10_00, 10)).isEmpty());
+        other(a, limit(OTHER, Side.SELL, 12_00, 10));
+        assertTrue(user(a, limit(YOU, Side.BUY, 12_00, 10)).isEmpty());
+        assertEquals(220_00, a.costBasis());
+        assertEquals(11_00, a.averageCost().getAsLong());
+        assertEquals(0, a.realizedPnl());
+        assertEquals(20_00, a.unrealizedPnl());
+
+        other(a, limit(OTHER, Side.BUY, 13_00, 5));
+        assertTrue(user(a, limit(YOU, Side.SELL, 13_00, 5)).isEmpty());
+        assertEquals(10_00, a.realizedPnl());
+        assertEquals(165_00, a.costBasis());
+        assertEquals(30_00, a.unrealizedPnl());
+        assertEquals(40_00, a.sessionPnl());
+        assertEquals(a.equity() - a.startingCash(), a.sessionPnl());
+
+        other(a, limit(OTHER, Side.BUY, 9_00, 15));
+        assertTrue(user(a, limit(YOU, Side.SELL, 9_00, 15)).isEmpty());
+        assertEquals(0, a.sharesOwned());
+        assertEquals(0, a.costBasis());
+        assertTrue(a.averageCost().isEmpty());
+        assertEquals(-20_00, a.realizedPnl());
+        assertEquals(0, a.unrealizedPnl());
+        assertEquals(-20_00, a.sessionPnl());
+        assertEquals(980_00, a.cash());
+    }
+
+    @Test
     void amendAdjustsTheReservation() {
         Account a = new Account(YOU, 1_000_00, 20);
         Command.Place buy = limit(YOU, Side.BUY, 10_00, 50);

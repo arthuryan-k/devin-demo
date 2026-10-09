@@ -58,6 +58,11 @@ public final class Account {
     private long reservedCash;
     private long shares;
     private long reservedShares;
+    /** Session P&L baseline; starting shares are unpriced. */
+    private final long startingCash;
+    /** Cost of the shares held under the average-cost method. */
+    private long costBasis;
+    private long realizedPnl;
     private OptionalLong lastTradePrice = OptionalLong.empty();
     private final Map<Long, Open> open = new LinkedHashMap<>();
     /** Reservation made by the last admitted command, rolled back if the engine rejects it. */
@@ -98,6 +103,7 @@ public final class Account {
         this.participantId = participantId;
         this.cash = cash;
         this.shares = shares;
+        this.startingCash = cash;
     }
 
     /**
@@ -264,7 +270,11 @@ public final class Account {
             reservedCash -= release;
             order.reserved -= release;
             shares += qty;
+            costBasis += value;
         } else {
+            long soldCost = Math.multiplyExact(costBasis, qty) / shares;
+            costBasis -= soldCost;
+            realizedPnl += value - soldCost;
             shares -= qty;
             reservedShares -= qty;
             cash += value;
@@ -364,6 +374,34 @@ public final class Account {
     /** Cash plus shares marked at the last trade price (shares count as 0 before any trade). */
     public long equity() {
         return cash + (lastTradePrice.isPresent() ? shares * lastTradePrice.getAsLong() : 0);
+    }
+
+    public long startingCash() {
+        return startingCash;
+    }
+
+    public long costBasis() {
+        return costBasis;
+    }
+
+    /** Average cost per held share in ticks, rounded; empty when flat. */
+    public OptionalLong averageCost() {
+        return shares == 0 ? OptionalLong.empty() : OptionalLong.of(Math.round((double) costBasis / shares));
+    }
+
+    /** Proceeds of sells minus the average cost of the shares sold. */
+    public long realizedPnl() {
+        return realizedPnl;
+    }
+
+    /** Held shares marked at the last trade price minus their cost; 0 before any trade. */
+    public long unrealizedPnl() {
+        return lastTradePrice.isPresent() ? shares * lastTradePrice.getAsLong() - costBasis : 0;
+    }
+
+    /** Gain or loss since the account opened: realized plus unrealized. */
+    public long sessionPnl() {
+        return realizedPnl + unrealizedPnl();
     }
 
     public boolean owns(long orderId) {
