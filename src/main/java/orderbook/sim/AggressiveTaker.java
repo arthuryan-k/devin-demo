@@ -46,7 +46,7 @@ final class AggressiveTaker implements Persona {
     public void act(Context ctx) {
         Random random = ctx.random();
         Side side = chooseSide(ctx.drift(), random);
-        List<Level> levels = ctx.book().depth(side.opposite(), 4);
+        List<Level> levels = ctx.depth(side.opposite(), 4);
         if (levels.isEmpty()) {
             return;
         }

@@ -44,9 +44,10 @@ engine, in what order, and who hears about the results.
                               → BUSY      global seqNum   only)
 ```
 
-- **Input ring (sequencer):** a preallocated, power-of-two `CommandEvent` ring with multiple producers. The HTTP
-  handlers and the simulator both submit through `Gateway`, which runs the user's account reservation check first
-  and then claims a slot with `tryPublishEvent()`. The slot's sequence is the command's global `seqNum`.
+- **Input ring (sequencer):** a preallocated, power-of-two `CommandEvent` ring with multiple producers. Every API
+  call (browser, external clients and simulated participants alike) is authenticated and admission-checked first
+  (see [Participant API](#participant-api)), then `Gateway` runs the user's account reservation check and claims a
+  slot with `tryPublishEvent()`. The slot's sequence is the command's global `seqNum`.
 - **Backpressure:** a full ring never blocks a producer; the command is rejected with `OrderRejected` reason
   `BUSY` and its reservation is released.
 - **Engine:** a single `EventHandler` thread that only matches; no I/O. `BlockingWaitStrategy` on both rings.
@@ -54,6 +55,33 @@ engine, in what order, and who hears about the results.
   thread with its own cursor: the journal writer, the market-data publisher, the response router (completes the
   waiting HTTP caller's `CompletableFuture`, keyed by sequence) and the simulator's read model. A slow handler
   only falls behind. Matching waits only once a handler lags by a whole output ring, and producers then see `BUSY`.
+
+## Participant API
+
+Every participant, including each simulated one, is an API client identified by an API key.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /participants/register` (optional form field `name`) | none | Returns `{"participantId":1001,"label":"name-1001","apiKey":"ob_…"}` |
+| `POST /api/orders` (`side`, `type`, `price`, `qty`, `timeInForce`) | `X-Api-Key` | Place an order as that participant |
+| `PATCH /api/orders/{id}` (`price` and/or `qty`) | `X-Api-Key` | Amend one of your resting orders |
+| `DELETE /api/orders/{id}` | `X-Api-Key` | Cancel one of your resting orders |
+
+```
+KEY=$(curl -s -d name=alice localhost:8080/participants/register | sed 's/.*"apiKey":"\([^"]*\)".*/\1/')
+curl -s -H "X-Api-Key: $KEY" -d 'side=BUY&type=LIMIT&price=99.50&qty=10' localhost:8080/api/orders
+```
+
+- **Authentication:** keys live in an in-memory registry that maps each key to its participant ID. A missing or
+  unknown key gets `401`, and touching another participant's order is rejected with `NOT_OWN_OPEN_ORDER`.
+  The browser is `YOU` (participant 1). The page sets an `HttpOnly` session cookie holding a reserved key that can
+  never be registered.
+- **Admission control:** checks run in the gateway before anything is published to the input ring. Each
+  participant has a token bucket of 200 messages/sec with a burst of 400 (orders, cancels and amends each cost one)
+  and may have at most 100 open orders. A breach gets `429` with reason `RATE_LIMITED` or `MAX_OPEN_ORDERS`.
+- **Blocking:** after 100 violations a participant gets `403 BLOCKED` on every call. `POST /api/reset` clears
+  the counters.
+- Responses carry the order ID, the global `seq` and the engine's events. `YOU` also gets its book and account view.
 
 ## Market data
 
@@ -71,10 +99,13 @@ event log and trade tape filter the same stream. Account state is polled from `G
 
 ## Market simulator
 
-`orderbook.sim.Simulator` wraps the engine and sends it ordinary `Command`s, so the engine core is unaware of it.
+`orderbook.sim.Simulator` is an orchestrator of API clients. Each simulated participant runs on its own client thread,
+registers through `POST /participants/register` and trades over HTTP with its own key and limits.
 
-- **Order flow:** arrivals follow a Poisson process (exponential inter-arrival times) at an adjustable rate. A
-  single-threaded executor serializes simulated and user commands. Runs are reproducible from a seed.
+- **Order flow:** arrivals follow a Poisson process (exponential inter-arrival times) at an adjustable rate. Each
+  arrival deals one participant a turn: a snapshot of the market (reference price, top 10 levels, its own orders),
+  which its persona turns into authenticated order/cancel/amend calls. Runs are reproducible from a seed when
+  participants run in-process (the static demo and tests).
 - **Reference price:** a hidden fair value follows a random walk with rare jumps. Each jump starts a volatility
   shock that fades out over 12 seconds. During a shock, prices move more, market makers quote wider, and
   participants are more likely to leave.

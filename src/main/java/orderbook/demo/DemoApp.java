@@ -22,7 +22,13 @@ import orderbook.TimeInForce;
 import orderbook.Trade;
 import orderbook.marketdata.MarketDataPublisher;
 import orderbook.marketdata.Outbox;
+import orderbook.api.AdmissionControl;
+import orderbook.api.ApiException;
+import orderbook.api.ExchangeService;
+import orderbook.api.InProcessExchangeClient;
 import orderbook.pipeline.Gateway;
+import orderbook.sim.ClientLoop;
+import orderbook.sim.ExchangeClient.Credentials;
 import orderbook.sim.Simulator;
 
 /**
@@ -38,13 +44,13 @@ final class DemoApp {
     private static final int MAX_FEED_PER_RESPONSE = 200;
     private static final int DEPTH_LEVELS = 30;
     static final long USER = Simulator.USER_PARTICIPANT_ID;
-    private static final long RESPONSE_TIMEOUT_MILLIS = 10_000;
 
 
     private record FeedEntry(long seq, String json) {
     }
 
     private final Simulator simulator;
+    private final ExchangeService exchange;
     private final MarketDataPublisher marketData = new MarketDataPublisher();
     private final Supplier<Account> accountFactory;
 
@@ -58,12 +64,23 @@ final class DemoApp {
 
     /** {@code accountFactory} builds the user's account at startup and on reset; null for a random starting cash. */
     DemoApp(Simulator simulator, Supplier<Account> accountFactory) {
+        this(simulator, accountFactory, AdmissionControl.Limits.DEFAULT, new Random());
+    }
+
+    /**
+     * {@code limits} apply to every participant including the user; {@code keyRandom} generates API keys (use a
+     * {@code SecureRandom} when serving real clients). Simulated participants trade through the in-process client
+     * until {@link Simulator#connect} points them elsewhere.
+     */
+    DemoApp(Simulator simulator, Supplier<Account> accountFactory, AdmissionControl.Limits limits, Random keyRandom) {
         this.simulator = simulator;
+        this.exchange = new ExchangeService(simulator, limits, keyRandom);
         Random accountRandom = new Random(simulator.seed() ^ 0x5DEECE66DL);
         this.accountFactory = accountFactory != null ? accountFactory
                 : () -> Account.withRandomCash(USER, accountRandom, simulator.startingReferenceTicks());
         simulator.run(() -> account = this.accountFactory.get());
-        marketData.setLabels(simulator::label);
+        marketData.setLabels(exchange::label);
+        simulator.connect(new InProcessExchangeClient(exchange), ClientLoop.INLINE);
         simulator.pipeline().addConsumer(marketData);
         simulator.gateway().setRiskCheck(USER, new AccountCheck());
         simulator.addListener(this::onCommand);
@@ -98,6 +115,15 @@ final class DemoApp {
         return simulator;
     }
 
+    ExchangeService exchange() {
+        return exchange;
+    }
+
+    /** The browser session's reserved API key (participant "YOU"). */
+    String userKey() {
+        return exchange.userKey();
+    }
+
     /** Subscribes to {@code /marketdata/stream}: a snapshot first, then one delta per global sequence. */
     Outbox connect(Outbox.Transport transport) {
         return marketData.subscribe(transport);
@@ -117,8 +143,8 @@ final class DemoApp {
         }
     }
 
-    /** One API request; {@code query} and {@code body} are still URL-encoded. */
-    record Call(String method, String path, String query, String body) {
+    /** One API request; {@code query} and {@code body} are still URL-encoded; {@code apiKey} may be null. */
+    record Call(String method, String path, String query, String body, String apiKey) {
     }
 
     @FunctionalInterface
@@ -130,14 +156,19 @@ final class DemoApp {
         return route(path) != null;
     }
 
-    /** Handles an API request; invalid input becomes a 400 reply rather than an exception. */
-    Reply handle(String method, String path, String query, String body) {
+    /**
+     * Handles an API request authenticated by {@code apiKey} (null if none); invalid input becomes a 400 reply and
+     * refused calls their {@link ApiException} status rather than an exception.
+     */
+    Reply handle(String method, String path, String query, String body, String apiKey) {
         Endpoint endpoint = route(path);
         if (endpoint == null) {
             return Reply.error(404, "not found");
         }
         try {
-            return endpoint.handle(new Call(method, path, query, body));
+            return endpoint.handle(new Call(method, path, query, body, apiKey));
+        } catch (ApiException e) {
+            return new Reply(e.status(), Json.obj("error", Json.str(e.getMessage()), "reason", Json.str(e.reason())));
         } catch (IllegalArgumentException e) {
             return Reply.error(400, e.getMessage());
         } catch (RuntimeException e) {
@@ -160,6 +191,9 @@ final class DemoApp {
         }
         if (under(path, "/simulate")) {
             return this::simulate;
+        }
+        if (under(path, "/participants")) {
+            return this::participants;
         }
         return null;
     }
@@ -189,28 +223,40 @@ final class DemoApp {
                 "lastTradePrice", price(account.lastTradePrice()))));
     }
 
+    /** {@code POST /participants/register}: a new participant id and API key ({@code name} labels it). */
+    private Reply participants(Call call) {
+        if (!call.method().equals("POST") || !call.path().equals("/participants/register")) {
+            return Reply.error(405, "use POST /participants/register");
+        }
+        Credentials c = exchange.register(parseForm(call.body()).get("name"));
+        return Reply.ok(Json.obj("participantId", Long.toString(c.participantId()), "label", Json.str(c.label()),
+                "apiKey", Json.str(c.apiKey())));
+    }
+
     private Reply orders(Call call) {
         String method = call.method();
         String path = call.path();
-        if (method.equals("POST") && path.equals("/api/orders")) {
-            return place(parseForm(call.body()));
-        }
-        if (path.startsWith("/api/orders/")) {
+        boolean known = method.equals("POST") && path.equals("/api/orders")
+                || path.startsWith("/api/orders/") && (method.equals("DELETE") || method.equals("PATCH"));
+        if (known) {
+            Credentials who = exchange.authenticate(call.apiKey());
+            if (method.equals("POST")) {
+                return place(who, parseForm(call.body()));
+            }
             long id = parseLong("id", path.substring("/api/orders/".length()));
             if (method.equals("DELETE")) {
-                return submitUser(new Command.Cancel(id));
+                return reply(who, exchange.cancel(who, id));
             }
-            if (method.equals("PATCH")) {
-                return amend(id, parseForm(call.body()));
-            }
+            return amend(who, id, parseForm(call.body()));
         }
         return Reply.error(405, "use POST /api/orders, PATCH /api/orders/{id} or DELETE /api/orders/{id}");
     }
 
-    private Reply place(Map<String, String> form) {
-        String participant = form.getOrDefault("participantId", Simulator.USER_LABEL).trim();
-        if (!participant.isEmpty() && !participant.equals(Simulator.USER_LABEL)) {
-            throw new IllegalArgumentException("participantId must be " + Simulator.USER_LABEL);
+    private Reply place(Credentials who, Map<String, String> form) {
+        String participant = form.getOrDefault("participantId", "").trim();
+        if (!participant.isEmpty() && !participant.equals(who.label())
+                && !participant.equals(Long.toString(who.participantId()))) {
+            throw new IllegalArgumentException("participantId must be your own (" + who.label() + ")");
         }
         Side side = parseEnum(Side.class, "side", form.get("side"), null);
         OrderType type = parseEnum(OrderType.class, "type", form.get("type"), OrderType.LIMIT);
@@ -220,20 +266,10 @@ final class DemoApp {
         String idText = form.getOrDefault("id", "").trim();
         Long requestedId = idText.isEmpty() ? null : parseLong("id", idText);
 
-        Gateway gateway = simulator.gateway();
-        long id;
-        if (requestedId != null) {
-            id = requestedId;
-            gateway.reserveOrderIdsThrough(id);
-        } else {
-            id = gateway.nextOrderId();
-        }
-        Order order = type == OrderType.LIMIT ? Order.limit(id, USER, side, price, qty, tif)
-                : Order.market(id, USER, side, qty, tif);
-        return submitUser(new Command.Place(order));
+        return reply(who, exchange.place(who, side, type, tif, price, qty, requestedId));
     }
 
-    private Reply amend(long id, Map<String, String> form) {
+    private Reply amend(Credentials who, long id, Map<String, String> form) {
         String priceText = form.getOrDefault("price", "").trim();
         String qtyText = form.getOrDefault("qty", "").trim();
         Long price = priceText.isEmpty() ? null : Ticks.parse("price", priceText);
@@ -241,45 +277,33 @@ final class DemoApp {
         if (price == null && qty == null) {
             throw new IllegalArgumentException("price or qty is required");
         }
-        return submitUser(new Command.Amend(id, price, qty));
+        return reply(who, exchange.amend(who, id, price, qty));
     }
 
     /**
-     * HTTP thread: account check and publish on the simulator thread (the account is confined there), then wait for
-     * the engine's result through the response router without holding the loop, then reply with the new state.
+     * The engine's (or the user's account check's) answer; the user also gets the refreshed book and account, which
+     * reflect the command because the service waited for the replica to apply it.
      */
-    private Reply submitUser(Command command) {
-        Gateway.Submission submission = simulator.execute(() -> {
-            simulator.catchUp();
-            return simulator.gateway().submit(USER, command, true);
-        });
-        if (submission.rejection() != null) {
-            Gateway.Rejection r = submission.rejection();
-            String json = Json.obj("type", Json.str("AccountRejected"), "orderId", Long.toString(r.orderId()),
-                    "participant", Json.str(Simulator.USER_LABEL), "reason", Json.str(r.reason()),
+    private Reply reply(Credentials who, ExchangeService.Outcome outcome) {
+        boolean user = who.participantId() == USER;
+        if (outcome.rejection() != null) {
+            Gateway.Rejection r = outcome.rejection();
+            String json = Json.obj("type", Json.str(user ? "AccountRejected" : "Rejected"), "orderId", Long.toString(r.orderId()),
+                    "participant", Json.str(who.label()), "reason", Json.str(r.reason()),
                     "message", Json.str(r.message()));
             return simulator.execute(() -> {
                 addFeed(json);
-                return Reply.ok("{\"events\":[" + json + "],\"book\":" + stateJson(Long.MAX_VALUE) + "}");
+                return Reply.ok("{\"orderId\":" + r.orderId() + ",\"events\":[" + json + "]"
+                        + (user ? ",\"book\":" + stateJson(Long.MAX_VALUE) : "") + "}");
             });
         }
-        List<Event> events;
-        long seq = submission.seq();
-        if (submission.busy() != null) {
-            events = List.of(submission.busy());
-        } else {
-            events = simulator.pipeline().awaitResponse(seq, RESPONSE_TIMEOUT_MILLIS).events();
-        }
         return simulator.execute(() -> {
-            if (seq >= 0) {
-                simulator.awaitApplied(seq);
-            }
             List<String> eventJson = new ArrayList<>();
-            for (Event event : events) {
-                eventJson.add(eventJson(event, USER));
+            for (Event event : outcome.events()) {
+                eventJson.add(eventJson(event, who.participantId()));
             }
-            return Reply.ok("{\"seq\":" + seq + ",\"events\":" + Json.array(eventJson) + ",\"book\":"
-                    + stateJson(Long.MAX_VALUE) + "}");
+            return Reply.ok("{\"orderId\":" + outcome.orderId() + ",\"seq\":" + outcome.seq() + ",\"events\":"
+                    + Json.array(eventJson) + (user ? ",\"book\":" + stateJson(Long.MAX_VALUE) : "") + "}");
         });
     }
 
@@ -288,6 +312,7 @@ final class DemoApp {
             return Reply.error(405, "use POST");
         }
         simulator.reset();
+        exchange.admission().reset();
         return Reply.ok(simulator.execute(() -> {
             account = accountFactory.get();
             trades.clear();
@@ -447,7 +472,7 @@ final class DemoApp {
                 Order o = orders.get(i++);
                 total += o.qtyRemaining();
                 orderJson.add(Json.obj("id", Long.toString(o.id()), "qty", Long.toString(o.qtyRemaining()),
-                        "seqNum", Long.toString(o.seqNum()), "participant", Json.str(simulator.label(o.participantId())),
+                        "seqNum", Long.toString(o.seqNum()), "participant", Json.str(exchange.label(o.participantId())),
                         "mine", Boolean.toString(o.participantId() == USER)));
             }
             levels.add(Json.obj("price", Ticks.format(price), "totalQty", Long.toString(total),
@@ -458,7 +483,7 @@ final class DemoApp {
 
     private String owner(long orderId, long fallbackParticipant) {
         long owner = simulator.participantOf(orderId);
-        return Json.str(simulator.label(owner != Order.NO_PARTICIPANT ? owner : fallbackParticipant));
+        return Json.str(exchange.label(owner != Order.NO_PARTICIPANT ? owner : fallbackParticipant));
     }
 
     private String tradeJson(Trade t) {
@@ -482,7 +507,7 @@ final class DemoApp {
         }
         if (event instanceof Event.OrderRejected e) {
             return Json.obj("type", Json.str("OrderRejected"), "orderId", Long.toString(e.orderId()),
-                    "participant", Json.str(simulator.label(issuer)), "reason", Json.str(e.reason().name()));
+                    "participant", Json.str(exchange.label(issuer)), "reason", Json.str(e.reason().name()));
         }
         if (event instanceof Event.OrderCancelled e) {
             return Json.obj("type", Json.str("OrderCancelled"), "orderId", Long.toString(e.orderId()),

@@ -36,7 +36,7 @@ final class Whale implements Persona {
         Random random = ctx.random();
         Side side = Draw.side(random);
         long depth = 0;
-        for (Level level : ctx.book().depth(side.opposite(), 10)) {
+        for (Level level : ctx.depth(side.opposite(), 10)) {
             depth += level.totalQty();
         }
         if (depth == 0) {

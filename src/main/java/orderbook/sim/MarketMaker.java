@@ -93,7 +93,7 @@ final class MarketMaker implements Persona {
         long ref = ctx.referencePrice();
         long half = halfSpread(riskTolerance, ctx.shockIntensity());
         for (Side side : Side.values()) {
-            if (ctx.book().bestPrice(side).isEmpty()) {
+            if (ctx.bestPrice(side).isEmpty()) {
                 quote(ctx, side, ref, half);
                 return;
             }

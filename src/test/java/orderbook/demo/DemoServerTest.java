@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.net.CookieManager;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -26,13 +27,16 @@ class DemoServerTest {
     private static final long OTHER = 5_000;
 
     private DemoServer server;
-    private final HttpClient client = HttpClient.newHttpClient();
+    private final HttpClient client = HttpClient.newBuilder().cookieHandler(new CookieManager()).build();
 
     @BeforeEach
-    void start() throws IOException {
+    void start() throws Exception {
         server = new DemoServer(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), new Simulator(1),
                 () -> new Account(DemoServer.USER, 10_000_00, 100));
         server.start();
+        // The page sets the browser session cookie (the reserved "YOU" key) that authenticates /api/orders.
+        client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + "/")).build(),
+                HttpResponse.BodyHandlers.discarding());
     }
 
     @AfterEach

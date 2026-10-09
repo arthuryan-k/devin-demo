@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.net.CookieManager;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -40,7 +41,7 @@ class StreamTest {
     private static final Pattern SEQ = Pattern.compile("\"seq\":(-?\\d+)");
 
     private DemoServer server;
-    private final HttpClient client = HttpClient.newHttpClient();
+    private final HttpClient client = HttpClient.newBuilder().cookieHandler(new CookieManager()).build();
     private final List<CompletableFuture<?>> streams = new ArrayList<>();
 
     @BeforeEach
@@ -48,6 +49,9 @@ class StreamTest {
         server = new DemoServer(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), new Simulator(1),
                 () -> new Account(DemoServer.USER, 10_000_00, 100));
         server.start();
+        // The page sets the browser session cookie (the reserved "YOU" key) that authenticates /api/orders.
+        client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + "/")).build(),
+                HttpResponse.BodyHandlers.discarding());
     }
 
     @AfterEach
