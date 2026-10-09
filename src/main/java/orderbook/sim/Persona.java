@@ -1,10 +1,11 @@
 package orderbook.sim;
 
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.Random;
 
 import orderbook.Order;
-import orderbook.OrderBook;
+import orderbook.OrderBook.Level;
 import orderbook.Side;
 import orderbook.TimeInForce;
 
@@ -74,7 +75,11 @@ public interface Persona {
         /** 1 right after a volatility shock, decaying linearly to 0 over the cooldown. */
         double shockIntensity();
 
-        OrderBook book();
+        /** Best price on {@code side} in the market snapshot this turn was dealt. */
+        OptionalLong bestPrice(Side side);
+
+        /** Up to {@code levels} aggregated price levels on {@code side} (at most 10), best first. */
+        List<Level> depth(Side side, int levels);
 
         /** This participant's resting orders, in priority order per side (bids first). */
         List<Order> ownOrders();

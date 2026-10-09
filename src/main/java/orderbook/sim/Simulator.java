@@ -5,10 +5,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -18,6 +20,7 @@ import orderbook.Event;
 import orderbook.MatchingEngine;
 import orderbook.Order;
 import orderbook.OrderBook;
+import orderbook.OrderType;
 import orderbook.Side;
 import orderbook.TimeInForce;
 import orderbook.pipeline.DisruptorPipeline;
@@ -46,6 +49,8 @@ public final class Simulator implements AutoCloseable {
     public static final long DEFAULT_START_REFERENCE_TICKS = 100_00;
     public static final double DEFAULT_RATE = 5;
     public static final double MAX_RATE = 100;
+    private static final long EXIT_TIMEOUT_MILLIS = 5_000;
+    private static final int SNAPSHOT_LEVELS = 10;
     private static final long RESULT_TIMEOUT_MILLIS = 10_000;
 
     static final int MIN_PARTICIPANTS = 2;
@@ -59,7 +64,6 @@ public final class Simulator implements AutoCloseable {
     static final double REFILL_ENTRY_PER_SEC = 0.3;
     static final double ENTRY_RAMP_SEC = 8;
 
-    private static final long FIRST_SIM_PARTICIPANT_ID = 1001;
     private static final int MAX_TRACKED_ORDERS = 500_000;
     private static final Logger LOG = Logger.getLogger(Simulator.class.getName());
 
@@ -106,7 +110,9 @@ public final class Simulator implements AutoCloseable {
             return size() > MAX_TRACKED_ORDERS;
         }
     };
-    private long nextParticipantId = FIRST_SIM_PARTICIPANT_ID;
+    private ExchangeClient exchange;
+    private ClientLoop.Factory clientLoops = ClientLoop.INLINE;
+    private final Map<Integer, AtomicLong> clientReplies = new ConcurrentHashMap<>();
     private long generation;
     private Scheduler.Task pending;
 
@@ -186,20 +192,60 @@ public final class Simulator implements AutoCloseable {
         });
     }
 
-    /** Stops the arrival loop, cancels every resting non-user order and removes all simulated participants. */
-    public void stop() {
+    /**
+     * Connects simulated participants to the exchange: every participant spawned from now on registers through
+     * {@code client} and trades only through it, on a loop from {@code loops}. Only while no participant exists.
+     */
+    public void connect(ExchangeClient client, ClientLoop.Factory loops) {
+        Objects.requireNonNull(client, "client");
+        Objects.requireNonNull(loops, "loops");
         run(() -> {
+            if (!participants.isEmpty()) {
+                throw new IllegalStateException("connect before participants exist");
+            }
+            exchange = client;
+            clientLoops = loops;
+        });
+    }
+
+    /** HTTP status &rarr; number of API replies simulated participants have received (0 = transport failure). */
+    public Map<Integer, Long> clientReplies() {
+        Map<Integer, Long> out = new java.util.TreeMap<>();
+        clientReplies.forEach((status, n) -> out.put(status, n.get()));
+        return out;
+    }
+
+    /**
+     * Stops the arrival loop and lets every simulated participant leave (each cancels its own resting orders over
+     * the API), then sweeps any non-user order still resting.
+     */
+    public void stop() {
+        List<Participant> leaving = execute(() -> {
             running = false;
             generation++;
             if (pending != null) {
                 pending.cancel();
                 pending = null;
             }
-            for (Participant participant : List.copyOf(participants)) {
+            List<Participant> all = List.copyOf(participants);
+            for (Participant participant : all) {
                 exit(participant);
             }
-            cancelAllNonUserOrders();
+            return all;
         });
+        if (!scheduler.onLoop()) {
+            for (Participant participant : leaving) {
+                try {
+                    if (!participant.loop().awaitClosed(EXIT_TIMEOUT_MILLIS)) {
+                        LOG.warning(participant + " did not finish leaving in time");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        run(this::cancelAllNonUserOrders);
     }
 
     /** Sets the mean number of simulation steps (order arrivals) per second; takes effect immediately. */
@@ -414,7 +460,7 @@ public final class Simulator implements AutoCloseable {
         }
         Participant participant = find(owner.participantId());
         if (participant != null) {
-            participant.persona().onFill(owner.side(), qty);
+            participant.loop().post(() -> participant.persona().onFill(owner.side(), qty));
         }
     }
 
@@ -551,26 +597,59 @@ public final class Simulator implements AutoCloseable {
 
     Participant addParticipant(Persona.Kind kind, double riskTolerance, double spawnTime) {
         assertOnExecutor();
-        long id = nextParticipantId++;
-        String label = kind.labelPrefix() + "-" + id;
-        labels.put(id, label);
-        Participant participant = new Participant(id, label, Persona.create(kind, riskTolerance), spawnTime);
+        if (exchange == null) {
+            throw new IllegalStateException("no exchange connected; call connect() first");
+        }
+        ExchangeClient client = exchange;
+        Random own = new Random(random.nextLong());
+        ClientLoop loop = clientLoops.create(kind.labelPrefix());
+        ExchangeClient.Credentials credentials = loop.call(() -> client.register(kind.labelPrefix()));
+        if (credentials.participantId() == USER_PARTICIPANT_ID) {
+            throw new IllegalStateException("exchange handed a simulated participant the user's id");
+        }
+        labels.put(credentials.participantId(), credentials.label());
+        Participant participant = new Participant(credentials.participantId(), credentials.label(),
+                credentials.apiKey(), Persona.create(kind, riskTolerance), spawnTime, own, loop);
         participants.add(participant);
         return participant;
     }
 
-    /** Cancels the participant's resting orders first, then removes it. */
+    /** Removes the participant; on its way out its client cancels its own resting orders over the API. */
     void exit(Participant participant) {
         assertOnExecutor();
-        for (Order order : ownOrders(participant.id())) {
-            publish(participant.id(), new Command.Cancel(order.id()));
-        }
         participants.remove(participant);
+        ExchangeClient client = exchange;
+        participant.loop().close(() -> {
+            List<Long> ids = execute(() -> ownOrders(participant.id()).stream().map(Order::id).toList());
+            for (long id : ids) {
+                call(() -> client.cancel(participant.apiKey(), id));
+            }
+        });
     }
 
+    /** Deals the participant a turn: a market snapshot taken here, acted on by its client loop. */
     void act(Participant participant) {
         assertOnExecutor();
-        participant.persona().act(new ActorContext(participant));
+        drain();
+        Turn turn = new Turn(participant, exchange);
+        participant.loop().tryDispatch(() -> {
+            try {
+                participant.persona().act(turn);
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, participant + " turn failed", e);
+            }
+        });
+    }
+
+    private void call(Supplier<ExchangeClient.Reply> request) {
+        int status;
+        try {
+            status = request.get().status();
+        } catch (RuntimeException e) {
+            LOG.log(Level.FINE, "API call failed", e);
+            status = 0;
+        }
+        clientReplies.computeIfAbsent(status, k -> new AtomicLong()).incrementAndGet();
     }
 
     private void cancelAllNonUserOrders() {
@@ -583,7 +662,9 @@ public final class Simulator implements AutoCloseable {
         }
     }
 
-    private List<Order> ownOrders(long participantId) {
+    /** The participant's resting orders in the replica, in priority order per side. Simulator thread only. */
+    public List<Order> ownOrders(long participantId) {
+        assertOnExecutor();
         List<Order> own = new ArrayList<>();
         for (Side side : Side.values()) {
             for (Order order : engine.book().orders(side)) {
@@ -620,61 +701,88 @@ public final class Simulator implements AutoCloseable {
         }
     }
 
-    /** A persona's window onto the market; every action becomes a command from that participant. */
-    private final class ActorContext implements Persona.Context {
+    /**
+     * One turn of a simulated client: a snapshot of the market (taken on the simulator thread) plus actions that
+     * become authenticated API calls. Safe to use on the client's own thread.
+     */
+    private final class Turn implements Persona.Context {
         private final Participant self;
+        private final ExchangeClient client;
+        private final long referenceTicks;
+        private final double drift;
+        private final double shockIntensity;
+        private final List<OrderBook.Level> bids;
+        private final List<OrderBook.Level> asks;
+        private final List<Order> own;
 
-        ActorContext(Participant self) {
+        Turn(Participant self, ExchangeClient client) {
             this.self = self;
+            this.client = client;
+            this.referenceTicks = reference.ticks();
+            this.drift = reference.drift();
+            this.shockIntensity = reference.shockIntensity();
+            this.bids = engine.book().depth(Side.BUY, SNAPSHOT_LEVELS);
+            this.asks = engine.book().depth(Side.SELL, SNAPSHOT_LEVELS);
+            List<Order> copies = new ArrayList<>();
+            for (Order o : Simulator.this.ownOrders(self.id())) {
+                copies.add(Order.limit(o.id(), o.participantId(), o.side(), o.price(), o.qtyRemaining(),
+                        o.timeInForce()));
+            }
+            this.own = List.copyOf(copies);
         }
 
         @Override
         public Random random() {
-            return random;
+            return self.random();
         }
 
         @Override
         public long referencePrice() {
-            return reference.ticks();
+            return referenceTicks;
         }
 
         @Override
         public double drift() {
-            return reference.drift();
+            return drift;
         }
 
         @Override
         public double shockIntensity() {
-            return reference.shockIntensity();
+            return shockIntensity;
         }
 
         @Override
-        public OrderBook book() {
-            return engine.book();
+        public OptionalLong bestPrice(Side side) {
+            List<OrderBook.Level> levels = side == Side.BUY ? bids : asks;
+            return levels.isEmpty() ? OptionalLong.empty() : OptionalLong.of(levels.get(0).price());
+        }
+
+        @Override
+        public List<OrderBook.Level> depth(Side side, int levels) {
+            List<OrderBook.Level> all = side == Side.BUY ? bids : asks;
+            return all.subList(0, Math.min(Math.max(0, levels), all.size()));
         }
 
         @Override
         public List<Order> ownOrders() {
-            return Simulator.this.ownOrders(self.id());
+            return own;
         }
 
         @Override
         public void placeLimit(Side side, long price, long qty, TimeInForce timeInForce) {
-            Order order = Order.limit(gateway.nextOrderId(), self.id(), side, Math.max(1, price), Math.max(1, qty),
-                    timeInForce);
-            publish(self.id(), new Command.Place(order));
+            call(() -> client.place(self.apiKey(), side, OrderType.LIMIT, Math.max(1, price), Math.max(1, qty),
+                    timeInForce));
         }
 
         @Override
         public void placeMarket(Side side, long qty) {
-            Order order = Order.market(gateway.nextOrderId(), self.id(), side, Math.max(1, qty), TimeInForce.IOC);
-            publish(self.id(), new Command.Place(order));
+            call(() -> client.place(self.apiKey(), side, OrderType.MARKET, 0, Math.max(1, qty), TimeInForce.IOC));
         }
 
         @Override
         public void cancel(long orderId) {
             requireOwn(orderId);
-            publish(self.id(), new Command.Cancel(orderId));
+            call(() -> client.cancel(self.apiKey(), orderId));
         }
 
         @Override
@@ -682,17 +790,16 @@ public final class Simulator implements AutoCloseable {
             requireOwn(orderId);
             Long price = newPrice == null ? null : Math.max(1, newPrice);
             Long qty = newQty == null ? null : Math.max(1, newQty);
-            publish(self.id(), new Command.Amend(orderId, price, qty));
+            call(() -> client.amend(self.apiKey(), orderId, price, qty));
         }
 
         @Override
         public void shock(int direction) {
-            reference.jump(direction, random);
+            run(() -> reference.jump(direction, random));
         }
 
         private void requireOwn(long orderId) {
-            boolean own = engine.book().find(orderId).map(o -> o.participantId() == self.id()).orElse(false);
-            if (!own) {
+            if (own.stream().noneMatch(o -> o.id() == orderId)) {
                 throw new IllegalStateException(self + " tried to touch order " + orderId + " it does not own");
             }
         }

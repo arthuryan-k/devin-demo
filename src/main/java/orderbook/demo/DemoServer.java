@@ -3,6 +3,7 @@ package orderbook.demo;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
@@ -28,6 +29,8 @@ import org.eclipse.jetty.util.Callback;
 import orderbook.journal.Journal;
 import orderbook.marketdata.Outbox;
 import orderbook.pipeline.JournalHandler;
+import orderbook.api.AdmissionControl;
+import orderbook.sim.ClientLoop;
 import orderbook.sim.Simulator;
 
 /** Serves {@link DemoApp} on embedded Jetty: the page, the JSON API and the SSE market-data stream on one port. */
@@ -35,6 +38,8 @@ public final class DemoServer {
 
     static final long USER = Simulator.USER_PARTICIPANT_ID;
     static final String STREAM_PATH = "/marketdata/stream";
+    static final String API_KEY_HEADER = "X-Api-Key";
+    static final String SESSION_COOKIE = "ob_session";
     private static final long HEARTBEAT_SECONDS = 15;
 
     private final Server server;
@@ -53,7 +58,13 @@ public final class DemoServer {
     /** {@code accountFactory} builds the user's account at startup and on reset; null for a random starting cash. */
     public DemoServer(InetSocketAddress address, Simulator simulator, Supplier<Account> accountFactory)
             throws IOException {
-        app = new DemoApp(simulator, accountFactory);
+        this(address, simulator, accountFactory, AdmissionControl.Limits.DEFAULT);
+    }
+
+    /** {@code limits} are the per-participant admission limits (rate, burst, open orders, violations). */
+    public DemoServer(InetSocketAddress address, Simulator simulator, Supplier<Account> accountFactory,
+            AdmissionControl.Limits limits) throws IOException {
+        app = new DemoApp(simulator, accountFactory, limits, new SecureRandom());
         server = new Server();
         connector = new ServerConnector(server);
         connector.setHost(address.getAddress() != null ? address.getAddress().getHostAddress() : address.getHostString());
@@ -99,13 +110,18 @@ public final class DemoServer {
         } catch (Exception e) {
             throw new IOException("failed to start server", e);
         }
+        app.simulator().connect(new HttpExchangeClient(baseUri()), ClientLoop.dedicatedThreads());
         heartbeat.scheduleAtFixedRate(app.marketData()::heartbeat, HEARTBEAT_SECONDS, HEARTBEAT_SECONDS,
                 TimeUnit.SECONDS);
     }
 
-    /** Stops the HTTP server, then the stream clients, the simulator and its pipeline. */
+    /**
+     * Stops the simulation first (its clients leave over HTTP), then the HTTP server, the stream clients, the
+     * simulator and its pipeline.
+     */
     public void stop() {
         try {
+            app.simulator().stop();
             server.stop();
         } catch (Exception e) {
             throw new IllegalStateException("failed to stop server", e);
@@ -117,6 +133,22 @@ public final class DemoServer {
 
     public int port() {
         return connector.getLocalPort();
+    }
+
+    /** Where this server's own API clients (the simulated participants) connect. */
+    URI baseUri() {
+        String host = connector.getHost();
+        if (host == null || host.equals("0.0.0.0") || host.equals("::")) {
+            host = "127.0.0.1";
+        } else if (host.contains(":")) {
+            host = "[" + host + "]";
+        }
+        return URI.create("http://" + host + ":" + port());
+    }
+
+    /** The browser session's reserved API key, also set as the {@value #SESSION_COOKIE} cookie by {@code GET /}. */
+    String userKey() {
+        return app.userKey();
     }
 
     Simulator simulator() {
@@ -144,7 +176,7 @@ public final class DemoServer {
                 return true;
             }
             DemoApp.Reply reply = app.handle(request.getMethod(), path, request.getHttpURI().getQuery(),
-                    Content.Source.asString(request, StandardCharsets.UTF_8));
+                    Content.Source.asString(request, StandardCharsets.UTF_8), apiKey(request));
             send(response, callback, reply.status(), "application/json", reply.json().getBytes(StandardCharsets.UTF_8));
             return true;
         }
@@ -186,6 +218,23 @@ public final class DemoServer {
         }
     }
 
+    /** {@value #API_KEY_HEADER} for API clients; the browser page authenticates with its session cookie instead. */
+    private static String apiKey(Request request) {
+        String header = request.getHeaders().get(API_KEY_HEADER);
+        if (header != null && !header.isBlank()) {
+            return header.trim();
+        }
+        for (String cookies : request.getHeaders().getValuesList(HttpHeader.COOKIE)) {
+            for (String cookie : cookies.split(";")) {
+                int eq = cookie.indexOf('=');
+                if (eq > 0 && cookie.substring(0, eq).trim().equals(SESSION_COOKIE)) {
+                    return cookie.substring(eq + 1).trim();
+                }
+            }
+        }
+        return null;
+    }
+
     private void serveStatic(String path, Response response, Callback callback) throws IOException {
         if (!path.equals("/") && !path.equals("/index.html")) {
             send(response, callback, 404, "text/plain", "not found".getBytes(StandardCharsets.UTF_8));
@@ -196,6 +245,8 @@ public final class DemoServer {
                 send(response, callback, 500, "text/plain", "index.html missing".getBytes(StandardCharsets.UTF_8));
                 return;
             }
+            response.getHeaders().put(HttpHeader.SET_COOKIE,
+                    SESSION_COOKIE + "=" + app.userKey() + "; Path=/; HttpOnly; SameSite=Strict");
             send(response, callback, 200, "text/html; charset=utf-8", in.readAllBytes());
         }
     }

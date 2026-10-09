@@ -21,16 +21,25 @@ import orderbook.Event;
 import orderbook.Order;
 import orderbook.Side;
 import orderbook.TimeInForce;
+import orderbook.api.AdmissionControl;
+import orderbook.api.ExchangeService;
+import orderbook.api.InProcessExchangeClient;
 
 class SimulatorTest {
 
     private record Submitted(long participantId, Command command, List<Event> events) {
     }
 
+    /** Steps run back to back in wall-clock time, so rate limits are lifted here; ParticipantApiTest covers them. */
+    private static final AdmissionControl.Limits UNTHROTTLED = new AdmissionControl.Limits(1e9, 1_000_000, 50,
+            1_000_000);
+
     private final List<Simulator> sims = new ArrayList<>();
 
     private Simulator sim(long seed) {
         Simulator sim = new Simulator(seed);
+        ExchangeService exchange = new ExchangeService(sim, UNTHROTTLED, new Random(seed));
+        sim.connect(new InProcessExchangeClient(exchange), ClientLoop.INLINE);
         sims.add(sim);
         return sim;
     }

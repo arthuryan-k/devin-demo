@@ -43,7 +43,7 @@ public final class BrowserMain {
         DemoApp app = new DemoApp(new Simulator(new Random().nextLong(), Simulator.DEFAULT_START_REFERENCE_TICKS,
                 new BrowserScheduler(), new InlinePipeline()), null);
         export((method, path, query, body) -> {
-            DemoApp.Reply reply = app.handle(method, path, query, body);
+            DemoApp.Reply reply = app.handle(method, path, query, body, app.userKey());
             return reply.status() + "\n" + reply.json();
         }, sink -> app.connect(new Outbox.Transport() {
             @Override
