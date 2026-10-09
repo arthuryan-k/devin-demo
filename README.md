@@ -54,6 +54,7 @@ checked against that balance before it reaches the engine.
 - Buys reserve cash and sells reserve shares until the order fills or is cancelled.
 - Cash and shares can never go negative, so short selling is not allowed.
 - Fills settle at the trade price, and any unused reservation is refunded.
+- Session gain/loss is tracked at average cost: realized on sells, unrealized on held shares marked at the last trade.
 
 The simulation starts stopped; press **Simulate** to begin.
 

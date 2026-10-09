@@ -437,6 +437,11 @@ final class DemoApp {
                 "availableShares", Long.toString(account.availableShares()),
                 "markPrice", price(account.lastTradePrice()),
                 "equity", Ticks.format(account.equity()),
+                "startingCash", Ticks.format(account.startingCash()),
+                "avgCost", price(account.averageCost()),
+                "realizedPnl", Ticks.format(account.realizedPnl()),
+                "unrealizedPnl", Ticks.format(account.unrealizedPnl()),
+                "sessionPnl", Ticks.format(account.sessionPnl()),
                 "openOrders", Json.array(orders));
     }
 

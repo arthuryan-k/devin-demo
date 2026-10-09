@@ -47,6 +47,8 @@
   dl.sheet .total { border-top: 1px solid var(--border); padding-top: 4px; }
   #chart-wrap { position: relative; }
   #chart { width: 100%; height: 400px; display: block; }
+  #pchart { width: 100%; height: 220px; display: block; }
+  dl.sheet dd.pos { color: var(--bid); } dl.sheet dd.neg { color: var(--ask); }
   #chart rect.order { cursor: pointer; }
   #chart rect.order:hover { stroke: #fff; stroke-width: 2; }
   #tooltip { position: absolute; pointer-events: none; background: #0b0f14; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; display: none; white-space: nowrap; z-index: 10; }
@@ -132,8 +134,13 @@
         <dt>Total cash</dt><dd id="b-cash">–</dd>
         <dt>Shares owned</dt><dd id="b-shares">–</dd>
         <dt>Reserved shares</dt><dd id="b-rshares">–</dd>
+        <dt>Avg cost / share</dt><dd id="b-avg">–</dd>
         <dt>Mark price (last trade)</dt><dd id="b-mark">–</dd>
         <dt class="total">Mark-to-market equity</dt><dd class="total" id="b-equity">–</dd>
+        <dt class="total">Session gain / loss</dt><dd class="total" id="b-pnl">–</dd>
+        <dt>Realized</dt><dd id="b-realized">–</dd>
+        <dt>Unrealized</dt><dd id="b-unrealized">–</dd>
+        <dt>Return on starting cash</dt><dd id="b-ret">–</dd>
       </dl>
     </section>
   </div>
@@ -161,6 +168,13 @@
       <span style="--c: var(--you)">YOUR orders</span>
       <span style="--c: rgba(96,165,250,.5)">Cumulative depth (right axis)</span>
       <span style="--c: #fde68a">Last trade price</span>
+    </div>
+    <h2 style="margin-top:18px">Price over time — last trade (market-clearing price), last 2 minutes</h2>
+    <svg id="pchart"></svg>
+    <div class="legend">
+      <span style="--c: #fde68a">Last trade price</span>
+      <span style="--c: rgba(125,139,153,.45)">Best bid – best ask</span>
+      <span style="--c: var(--you)">YOUR fills (▲ buy, ▼ sell)</span>
     </div>
   </section>
 </main>
@@ -259,15 +273,18 @@ function logFeed(events) {
 function clearForReset() {
   $("log").replaceChildren();
   lastFeedSeq = 0;
+  for (const list of Object.values(priceHistory)) list.length = 0;
+  pview = null;
   logLine("", "RESET    engine cleared, new account");
 }
 
-function addTrades(newestFirst) {
+function addTrades(newestFirst, record) {
   for (let i = newestFirst.length - 1; i >= 0; i--) {
     const t = newestFirst[i];
     if (t.n <= lastTradeN) continue;
     lastTradeN = t.n;
     model.trades.unshift(t);
+    if (record) recordTrade(t);
   }
   model.trades.length = Math.min(model.trades.length, MAX_TRADES);
 }
@@ -291,7 +308,7 @@ function applySnapshot(f) {
 function applyDelta(f) {
   for (const o of f.orders) model.orders.set(o.id, o);
   for (const id of f.removed) model.orders.delete(id);
-  addTrades(f.trades);
+  addTrades(f.trades, true);
   Object.assign(model, { stats: f.stats, account: f.account, simulation: f.simulation });
   logFeed(f.events);
   dataDirty = true;
@@ -306,7 +323,7 @@ function applyBook(b) {
   const { bestBid, bestAsk, spread, lastTradePrice, restingOrders, tradeCount, tradedVolume } = b;
   if (tradeCount < lastTradeN) clearForReset();
   model.orders = new Map(orders.map(o => [o.id, o]));
-  addTrades(b.trades);
+  addTrades(b.trades, lastTradeN > 0);
   Object.assign(model, { stats: { bestBid, bestAsk, spread, lastTradePrice, restingOrders, tradeCount, tradedVolume },
     account: b.account, simulation: b.simulation });
   logFeed(b.events);
@@ -385,15 +402,19 @@ const ease = (cur, target, dt, tau) => cur + (target - cur) * (1 - Math.exp(-dt 
 const near = (a, b, eps) => Math.abs(a - b) < eps;
 
 const tweens = new Map();
-function setNumber(id, value, decimals) {
+function setNumber(id, value, decimals, signed) {
   const node = $(id);
-  if (value === null || value === undefined) { tweens.delete(id); node.textContent = "–"; return; }
+  if (value === null || value === undefined) { tweens.delete(id); node.textContent = "–"; tone(node, 0); return; }
   const v = Number(value);
   const tw = tweens.get(id);
-  if (!tw) { tweens.set(id, { cur: v, target: v, decimals }); node.textContent = v.toFixed(decimals); return; }
+  if (signed) tone(node, v);
+  if (!tw) { tweens.set(id, { cur: v, target: v, decimals, signed }); node.textContent = show(v, decimals, signed); return; }
   if (v !== tw.target) flash(node, v > tw.target);
   tw.target = v;
 }
+// signed: true for a +/- prefix and green/red tone, "%" to also append a percent sign.
+const show = (v, decimals, signed) => (signed && v > 0 ? "+" : "") + v.toFixed(decimals) + (signed === "%" ? "%" : "");
+function tone(node, v) { node.classList.toggle("pos", v > 0); node.classList.toggle("neg", v < 0); }
 function flash(node, up) {
   node.classList.remove("flash-up", "flash-down");
   void node.offsetWidth;
@@ -405,7 +426,7 @@ function stepTweens(dt) {
     if (tw.cur === tw.target) continue;
     tw.cur = ease(tw.cur, tw.target, dt, 90);
     if (near(tw.cur, tw.target, Math.pow(10, -tw.decimals) / 2)) tw.cur = tw.target; else moving = true;
-    $(id).textContent = tw.cur.toFixed(tw.decimals);
+    $(id).textContent = show(tw.cur, tw.decimals, tw.signed);
   }
   return moving;
 }
@@ -426,6 +447,11 @@ function renderNumbers() {
   setNumber("b-rshares", a.reservedShares, 0);
   setNumber("b-mark", a.markPrice, 2);
   setNumber("b-equity", a.equity, 2);
+  setNumber("b-avg", a.avgCost, 2);
+  setNumber("b-pnl", a.sessionPnl, 2, true);
+  setNumber("b-realized", a.realizedPnl, 2, true);
+  setNumber("b-unrealized", a.unrealizedPnl, 2, true);
+  setNumber("b-ret", Number(a.startingCash) > 0 ? 100 * a.sessionPnl / a.startingCash : 0, 2, "%");
 }
 
 let lastParticipants = "";
@@ -692,6 +718,110 @@ function drawChart(dt) {
   return moving;
 }
 
+// ---- price over time: sampled locally as trades and quotes arrive ---------------------------------------------------
+const PRICE_WINDOW_MS = 120000;
+const priceHistory = { trades: [], quotes: [], fills: [] }; // {t, p}, {t, bid, ask}, {t, p, side}
+let pview = null, pg = null;
+
+function recordTrade(tr) {
+  const t = performance.now(), p = Number(tr.price);
+  priceHistory.trades.push({ t, p });
+  const side = tr.takerParticipant === "YOU" ? tr.takerSide
+    : tr.makerParticipant === "YOU" ? (tr.takerSide === "BUY" ? "SELL" : "BUY") : null;
+  if (side) priceHistory.fills.push({ t, p, side });
+}
+
+function recordQuote(s) {
+  const num = v => v === null || v === undefined ? null : Number(v);
+  priceHistory.quotes.push({ t: performance.now(), bid: num(s.bestBid), ask: num(s.bestAsk) });
+  // After a (re)connect the history is empty: start the line at the latest known price.
+  if (!priceHistory.trades.length && s.lastTradePrice != null) {
+    priceHistory.trades.push({ t: performance.now(), p: Number(s.lastTradePrice) });
+  }
+}
+
+// Drops points left of the window, keeping the last one before it so lines start at the left edge.
+function trim(list, t0, keepOne) {
+  let i = 0;
+  while (i < list.length && list[i].t < t0 && !(keepOne && (i + 1 >= list.length || list[i + 1].t > t0))) i++;
+  if (i) list.splice(0, i);
+}
+
+function niceStep(raw) {
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  return [1, 2, 5, 10].map(k => k * mag).find(v => v >= raw);
+}
+
+function drawPriceChart(dt) {
+  const svg = $("pchart");
+  if (!pg) {
+    pg = { axes: el("g", {}), band: el("path", { fill: "rgba(125,139,153,.22)" }),
+      line: el("path", { fill: "none", stroke: "#fde68a", "stroke-width": 1.6, "stroke-linejoin": "round" }),
+      dots: el("g", {}), label: el("g", {}) };
+    svg.append(pg.axes, pg.band, pg.line, pg.dots, pg.label);
+  }
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 220;
+  const m = { l: 50, r: 56, t: 10, b: 22 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const now = performance.now(), t0 = now - PRICE_WINDOW_MS;
+  const { trades, quotes, fills } = priceHistory;
+  trim(trades, t0, true); trim(quotes, t0, true); trim(fills, t0, false);
+
+  let lo = Infinity, hi = -Infinity;
+  const widen = v => { if (v !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } };
+  for (const p of trades) widen(p.p);
+  for (const q of quotes) { widen(q.bid); widen(q.ask); }
+  if (lo === Infinity) {
+    pview = null;
+    pg.band.setAttribute("d", ""); pg.line.setAttribute("d", ""); pg.dots.replaceChildren(); pg.label.replaceChildren();
+    pg.axes.replaceChildren(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "#7d8b99" },
+      "No prices yet — press “Simulate” or place an order."));
+    return;
+  }
+  const pad = Math.max(0.05, (hi - lo) * 0.12);
+  if (!pview) pview = { lo: lo - pad, hi: hi + pad };
+  pview.lo = ease(pview.lo, lo - pad, dt, 400);
+  pview.hi = ease(pview.hi, hi + pad, dt, 400);
+  const x = t => m.l + (Math.max(t, t0) - t0) / PRICE_WINDOW_MS * pw;
+  const y = p => m.t + (pview.hi - p) / (pview.hi - pview.lo) * ph;
+
+  const axes = [];
+  const step = niceStep((pview.hi - pview.lo) / 4);
+  for (let v = Math.ceil(pview.lo / step) * step; v <= pview.hi; v += step) {
+    axes.push(el("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), stroke: "#26313d" }),
+      el("text", { x: m.l - 6, y: y(v) + 4, "text-anchor": "end", fill: "#7d8b99", "font-size": 11 }, v.toFixed(2)));
+  }
+  for (let s = 0; s <= PRICE_WINDOW_MS / 1000; s += 20) {
+    const xs = m.l + pw - s * 1000 / PRICE_WINDOW_MS * pw;
+    axes.push(el("text", { x: xs, y: H - 6, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, s ? `-${s}s` : "now"));
+  }
+  pg.axes.replaceChildren(...axes);
+
+  let band = "";
+  for (let i = 0; i < quotes.length; i++) {
+    const q = quotes[i];
+    if (q.bid === null || q.ask === null) continue;
+    const x1 = x(q.t), x2 = x(i + 1 < quotes.length ? quotes[i + 1].t : now);
+    band += `M${x1},${y(q.ask)}H${x2}V${y(q.bid)}H${x1}Z`;
+  }
+  pg.band.setAttribute("d", band);
+
+  let line = "";
+  trades.forEach((p, i) => { line += i ? `H${x(p.t)}V${y(p.p)}` : `M${x(p.t)},${y(p.p)}`; });
+  if (trades.length) line += `H${x(now)}`;
+  pg.line.setAttribute("d", line);
+
+  pg.dots.replaceChildren(...fills.map(f => {
+    const cx = x(f.t), cy = y(f.p), d = f.side === "BUY" ? 1 : -1;
+    return el("path", { d: `M${cx},${cy - 6 * d}L${cx + 5},${cy + 4 * d}L${cx - 5},${cy + 4 * d}Z`, fill: "#facc15",
+      stroke: f.side === "BUY" ? "#22c55e" : "#ef4444", "stroke-width": 1.5 });
+  }));
+
+  const last = trades.length ? trades[trades.length - 1].p : null;
+  pg.label.replaceChildren(...(last === null ? [] : [
+    el("text", { x: W - m.r + 6, y: y(last) + 4, fill: "#fde68a", "font-size": 12, "font-weight": 600 }, last.toFixed(2))]));
+}
+
 // One loop: fold the latest data in at most once per frame, then ease everything toward it.
 let lastFrame = performance.now(), chartMoving = false, forceChart = true;
 function frame(now) {
@@ -705,9 +835,11 @@ function frame(now) {
     renderOrders(book);
     renderTrades();
     setChartData(book);
+    recordQuote(model.stats);
     chartMoving = true;
   }
   stepTweens(dt);
+  drawPriceChart(dt);
   if (chartMoving || forceChart) { chartMoving = drawChart(dt); forceChart = false; }
   requestAnimationFrame(frame);
 }
