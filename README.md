@@ -126,7 +126,27 @@ The page has Simulate/Stop and a 1–20 orders/sec rate slider, an order ticket 
 GTC/IOC/FOK; no price for MARKET), cancel/amend by ID, and a balance sheet. The depth chart shows one bar per price
 level split into one segment per resting order (FIFO), plus cumulative depth, spread and last trade price. The
 resting-orders table, trade tape and event log show who owns each order, and your orders and trades are
-highlighted. The page polls about every 500 ms.
+highlighted.
+
+**Live updates (WebSocket stream).** `DemoServer` runs on embedded Jetty 12; the page, the JSON API and the stream
+share one port. The browser opens `ws://host:8080/ws` and keeps its own copy of the book:
+- On connect the server sends a `snapshot` frame (every resting order, recent trades and events, stats, account and
+  simulation status). After that it sends `delta` frames: orders whose state changed (full current state, so
+  re-applying is harmless), ids of removed orders, new trades and events, and the current stats/account/simulation.
+- Changes are coalesced on the simulator thread and flushed at most every 50 ms, and only when something changed, so a
+  burst of orders becomes one frame. Payload size follows activity, not book size.
+- Every frame has a `seq`; a delta also has `prevSeq`. A client that sees a gap reconnects with `/ws?since=<seq>`; the
+  server replays the missed deltas from a bounded history (256 frames) or, if they are gone, sends a fresh snapshot.
+- Each client has one send in flight and a bounded queue (64 frames). A client that falls further behind has its
+  queue replaced by one snapshot, so a slow browser costs bounded memory and never slows the simulator. Reset
+  broadcasts a snapshot with `"reason":"reset"`.
+- Orders still go through the REST endpoints below; only server→browser data moves to the stream. If the WebSocket
+  is unavailable, the page polls `GET /api/book` every 500 ms until it reconnects (status shown next to the seed).
+
+The page draws from that local model in a `requestAnimationFrame` loop: each resting order keeps its own SVG bar
+that eases to its new size and position and fades in/out, the chart's price window and size axes glide (axes grow
+fast and shrink slowly), header and balance-sheet numbers count to new values and flash green/red, and table rows are
+updated in place, with new trades and log lines sliding in.
 
 JSON API (prices and cash are decimals with tick size 0.01; integer ticks inside the engine):
 - `GET /api/book[?since=seq]`: book depth with per-order participant, trades, account, simulation status and
@@ -135,6 +155,7 @@ JSON API (prices and cash are decimals with tick size 0.01; integer ticks inside
   (LIMIT only), `timeInForce` (`GTC`|`IOC`|`FOK`, default `GTC`), `participantId` (only `YOU`), `id`.
 - `PATCH /api/orders/{id}` (`price` and/or `qty`), `DELETE /api/orders/{id}`: your orders only.
 - `POST /simulate/start`, `POST /simulate/stop`, `POST /simulate/rate?perSec=N`, `POST /api/reset`.
+- `GET /ws[?since=seq]` (WebSocket): the snapshot/delta stream described above.
 
 ### Build and test
 ```
@@ -157,4 +178,4 @@ widening quotes, re-quoting after drift, re-seeding an empty side, the direction
 bias, same-seed reproducibility, and that simulated flow only sends legal commands for its own orders and never acts
 as `YOU`. Account tests cover starting cash, reserving and releasing on fill/cancel, refunds when a buy fills below
 its limit, insufficient funds and shares, amends, market-order reservations, engine-rejection rollback, and a jqwik
-property that cash and shares never go negative. `DemoServerTest` covers the HTTP API end to end.
+property that cash and shares never go negative. `DemoServerTest` covers the HTTP API end to end on Jetty. `StreamTest` drives `/ws` with a real WebSocket client: snapshot on connect, chained `seq`/`prevSeq` deltas with partial fills and removals, coalescing of a 50-order burst into one frame and silence when idle, resume with `?since=` replaying missed deltas, a snapshot for an unknown `since`, and a reset snapshot. `OutboxTest` checks one send in flight, in-order delivery, replacing a slow client's backlog with a snapshot, and closing on send failure.
