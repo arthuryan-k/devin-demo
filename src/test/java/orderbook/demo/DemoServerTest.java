@@ -170,6 +170,10 @@ class DemoServerTest {
 
     @Test
     void simulationLifecycleOverHttp() throws Exception {
+        String initial = body("GET", "/api/book", null);
+        assertTrue(initial.contains("\"running\":false"), "simulation must start stopped: " + initial);
+        assertTrue(initial.contains("\"participants\":[]"), initial);
+
         String rate = body("POST", "/simulate/rate?perSec=20", null);
         assertTrue(rate.contains("\"ratePerSec\":20.0"), rate);
 
