@@ -1,4 +1,4 @@
-package orderbook.demo;
+package orderbook.marketdata;
 
 import java.util.ArrayDeque;
 import java.util.function.Consumer;
@@ -11,10 +11,10 @@ import java.util.function.Supplier;
  *
  * <p>{@link #enqueue} runs on the simulator thread; send completions arrive on transport threads.
  */
-final class Outbox {
+public final class Outbox {
 
     /** The underlying connection. {@code send} must call exactly one of its callbacks when the write finishes. */
-    interface Transport {
+    public interface Transport {
         void send(String text, Runnable onSuccess, Consumer<Throwable> onFailure);
 
         void close();
@@ -27,13 +27,13 @@ final class Outbox {
     private boolean closed;
     private long resyncs;
 
-    Outbox(Transport transport, int maxQueued) {
+    public Outbox(Transport transport, int maxQueued) {
         this.transport = transport;
         this.maxQueued = maxQueued;
     }
 
     /** Queues {@code frame}, or, if the backlog is full, replaces the whole backlog with {@code snapshot.get()}. */
-    void enqueue(String frame, Supplier<String> snapshot) {
+    public void enqueue(String frame, Supplier<String> snapshot) {
         synchronized (this) {
             if (closed) {
                 return;
@@ -68,7 +68,7 @@ final class Outbox {
         drain();
     }
 
-    void close() {
+    public void close() {
         synchronized (this) {
             if (closed) {
                 return;
@@ -79,15 +79,15 @@ final class Outbox {
         transport.close();
     }
 
-    synchronized boolean isClosed() {
+    public synchronized boolean isClosed() {
         return closed;
     }
 
-    synchronized int queued() {
+    public synchronized int queued() {
         return queue.size();
     }
 
-    synchronized long resyncs() {
+    public synchronized long resyncs() {
         return resyncs;
     }
 }

@@ -24,10 +24,50 @@ deterministic and single-threaded, uses integer prices (ticks) and quantities, a
   cancelled, and the resting order is left alone.
 - **Validation:** invalid input is returned as `OrderRejected` events and never thrown. This covers non-positive
   price or quantity, duplicate order IDs, and unknown order IDs.
-- **Journal and replay:** `orderbook.journal.Journal` writes every command as JSON Lines before processing it.
+- **Journal and replay:** `orderbook.journal.Journal` writes every command as JSON Lines. In the server it is an
+  output-ring handler (`-Djournal.path=FILE`), so commands are journaled in global sequence order.
   `Journal.recover()` replays the journal to rebuild an identical book and counters, and tolerates a torn last line.
 
 The book stores each side as a `TreeMap` of price levels with a FIFO queue per level, plus a hash index for O(1) cancels.
+
+## Pipeline
+
+The engine runs behind an explicit [LMAX Disruptor](https://lmax-exchange.github.io/disruptor/) pipeline
+(`orderbook.pipeline.DisruptorPipeline`). Matching logic is unchanged; the pipeline only decides who feeds the
+engine, in what order, and who hears about the results.
+
+```
+ HTTP order/cancel/amend ─┐                                                     ┌─▶ JournalHandler (JSON Lines)
+                          ├─▶ Gateway ─tryPublishEvent─▶ input ring ─▶ engine ─▶ output ring ─┼─▶ MarketDataPublisher ─▶ GET /marketdata/stream (SSE)
+ Simulator (personas) ────┘   account     CommandEvent    (1 thread,  ResultEvent ├─▶ ResponseRouter ─▶ CompletableFuture per HTTP caller
+                              check       slot seq =      matching    same seq    └─▶ Simulator read model (replica book, personas)
+                              → BUSY      global seqNum   only)
+```
+
+- **Input ring (sequencer):** a preallocated, power-of-two `CommandEvent` ring with multiple producers. The HTTP
+  handlers and the simulator both submit through `Gateway`, which runs the user's account reservation check first
+  and then claims a slot with `tryPublishEvent()`. The slot's sequence is the command's global `seqNum`.
+- **Backpressure:** a full ring never blocks a producer; the command is rejected with `OrderRejected` reason
+  `BUSY` and its reservation is released.
+- **Engine:** a single `EventHandler` thread that only matches; no I/O. `BlockingWaitStrategy` on both rings.
+- **Output ring (fan-out):** every result goes onto a second ring read by independent handlers, each on its own
+  thread with its own cursor: the journal writer, the market-data publisher, the response router (completes the
+  waiting HTTP caller's `CompletableFuture`, keyed by sequence) and the simulator's read model. A slow handler
+  only falls behind. Matching waits only once a handler lags by a whole output ring, and producers then see `BUSY`.
+
+## Market data
+
+`MarketDataPublisher` turns engine events into an aggregated (L2) feed, one message per global `seqNum`:
+
+- `snapshot`: `{"type":"snapshot","seq":S,"bids":[[price,qty,orders],…],"asks":[…],"trades":[…],"events":[…]}`
+- `delta`: `{"type":"delta","seq":N,"levels":[["a"|"u"|"r","B"|"S",price,qty,orders],…],"events":[…]}`. Trade
+  prints are `TradeExecuted` entries in `events`. Prices are integer ticks.
+
+`GET /marketdata/stream` is Server-Sent Events. Its first message is always a snapshot, taken under the same lock
+that applies results, so there is no snapshot/subscribe race. After snapshot `S`, deltas arrive as `S+1`, `S+2`, …
+with no holes. Any other sequence is a gap, and the client resyncs from a fresh snapshot. A slow client's backlog
+is replaced by a single snapshot. The page keeps a local book replica from the snapshot plus deltas, and the
+event log and trade tape filter the same stream. Account state is polled from `GET /api/account`.
 
 ## Market simulator
 
