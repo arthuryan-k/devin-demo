@@ -169,7 +169,7 @@
       <span style="--c: rgba(96,165,250,.5)">Cumulative depth (right axis)</span>
       <span style="--c: #fde68a">Last trade price</span>
     </div>
-    <h2 style="margin-top:18px">Price over time — last trade (market-clearing price), last 2 minutes</h2>
+    <h2 style="margin-top:18px">Price over time — last trade (market-clearing price), smoothed, last 2 minutes</h2>
     <svg id="pchart"></svg>
     <div class="legend">
       <span style="--c: #fde68a">Last trade price</span>
@@ -721,7 +721,7 @@ function drawChart(dt) {
 // ---- price over time: sampled locally as trades and quotes arrive ---------------------------------------------------
 const PRICE_WINDOW_MS = 120000;
 const priceHistory = { trades: [], quotes: [], fills: [] }; // {t, p}, {t, bid, ask}, {t, p, side}
-let pview = null, pg = null;
+let pview = null, pg = null, pTail = null;
 
 function recordTrade(tr) {
   const t = performance.now(), p = Number(tr.price);
@@ -767,10 +767,23 @@ function drawPriceChart(dt) {
   const { trades, quotes, fills } = priceHistory;
   trim(trades, t0, true); trim(quotes, t0, true); trim(fills, t0, false);
 
+  const both = quotes.map(q => q.bid === null || q.ask === null ? { t: q.t, bid: null, ask: null } : q);
+  const line = smoothSeries(trades, "p", t0), asks = smoothSeries(both, "ask", t0), bids = smoothSeries(both, "bid", t0);
+  const lastSeg = line[line.length - 1];
+  if (lastSeg) {
+    // The newest point glides to its value, then the line runs flat to "now".
+    const lastPt = lastSeg[lastSeg.length - 1];
+    pTail = pTail === null ? lastPt.v : ease(pTail, lastPt.v, dt, 250);
+    lastPt.v = pTail;
+    lastSeg.push({ t: now, v: pTail });
+  } else pTail = null;
+  const latest = both[both.length - 1];
+  if (latest && latest.ask !== null) {
+    for (const segs of [asks, bids]) { const sg = segs[segs.length - 1]; sg.push({ t: now, v: sg[sg.length - 1].v }); }
+  }
+
   let lo = Infinity, hi = -Infinity;
-  const widen = v => { if (v !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } };
-  for (const p of trades) widen(p.p);
-  for (const q of quotes) { widen(q.bid); widen(q.ask); }
+  for (const segs of [line, asks, bids]) for (const sg of segs) for (const pt of sg) { lo = Math.min(lo, pt.v); hi = Math.max(hi, pt.v); }
   if (lo === Infinity) {
     pview = null;
     pg.band.setAttribute("d", ""); pg.line.setAttribute("d", ""); pg.dots.replaceChildren(); pg.label.replaceChildren();
@@ -783,7 +796,8 @@ function drawPriceChart(dt) {
   pview.lo = ease(pview.lo, lo - pad, dt, 400);
   pview.hi = ease(pview.hi, hi + pad, dt, 400);
   const x = t => m.l + (Math.max(t, t0) - t0) / PRICE_WINDOW_MS * pw;
-  const y = p => m.t + (pview.hi - p) / (pview.hi - pview.lo) * ph;
+  const y = v => m.t + (pview.hi - v) / (pview.hi - pview.lo) * ph;
+  const pts = sg => sg.map(pt => ({ x: x(pt.t), y: y(pt.v) }));
 
   const axes = [];
   const step = niceStep((pview.hi - pview.lo) / 4);
@@ -791,25 +805,14 @@ function drawPriceChart(dt) {
     axes.push(el("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), stroke: "#26313d" }),
       el("text", { x: m.l - 6, y: y(v) + 4, "text-anchor": "end", fill: "#7d8b99", "font-size": 11 }, v.toFixed(2)));
   }
-  for (let s = 0; s <= PRICE_WINDOW_MS / 1000; s += 20) {
-    const xs = m.l + pw - s * 1000 / PRICE_WINDOW_MS * pw;
-    axes.push(el("text", { x: xs, y: H - 6, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, s ? `-${s}s` : "now"));
+  for (let sec = 0; sec <= PRICE_WINDOW_MS / 1000; sec += 20) {
+    const xs = m.l + pw - sec * 1000 / PRICE_WINDOW_MS * pw;
+    axes.push(el("text", { x: xs, y: H - 6, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, sec ? `-${sec}s` : "now"));
   }
   pg.axes.replaceChildren(...axes);
 
-  let band = "";
-  for (let i = 0; i < quotes.length; i++) {
-    const q = quotes[i];
-    if (q.bid === null || q.ask === null) continue;
-    const x1 = x(q.t), x2 = x(i + 1 < quotes.length ? quotes[i + 1].t : now);
-    band += `M${x1},${y(q.ask)}H${x2}V${y(q.bid)}H${x1}Z`;
-  }
-  pg.band.setAttribute("d", band);
-
-  let line = "";
-  trades.forEach((p, i) => { line += i ? `H${x(p.t)}V${y(p.p)}` : `M${x(p.t)},${y(p.p)}`; });
-  if (trades.length) line += `H${x(now)}`;
-  pg.line.setAttribute("d", line);
+  pg.band.setAttribute("d", asks.map((sg, k) => monotonePath(pts(sg), true) + monotonePath(pts(bids[k]).reverse(), false) + "Z").join(""));
+  pg.line.setAttribute("d", line.map(sg => monotonePath(pts(sg), true)).join(""));
 
   pg.dots.replaceChildren(...fills.map(f => {
     const cx = x(f.t), cy = y(f.p), d = f.side === "BUY" ? 1 : -1;
@@ -817,9 +820,48 @@ function drawPriceChart(dt) {
       stroke: f.side === "BUY" ? "#22c55e" : "#ef4444", "stroke-width": 1.5 });
   }));
 
-  const last = trades.length ? trades[trades.length - 1].p : null;
-  pg.label.replaceChildren(...(last === null ? [] : [
-    el("text", { x: W - m.r + 6, y: y(last) + 4, fill: "#fde68a", "font-size": 12, "font-weight": 600 }, last.toFixed(2))]));
+  const lastPrice = trades.length ? trades[trades.length - 1].p : null; // label the actual price, not the smoothed one
+  pg.label.replaceChildren(...(pTail === null ? [] : [
+    el("text", { x: W - m.r + 6, y: y(pTail) + 4, fill: "#fde68a", "font-size": 12, "font-weight": 600 }, lastPrice.toFixed(2))]));
+}
+
+// Averages values into BUCKET_MS buckets, then applies a light EMA; returns contiguous segments split at nulls.
+const BUCKET_MS = 500, SMOOTHING = 0.35;
+function smoothSeries(list, key, t0) {
+  const segs = [];
+  let seg = null, bucket = null, sum = 0, n = 0, ema = null;
+  const flush = () => {
+    if (n) { const mean = sum / n; ema = ema === null ? mean : ema + (mean - ema) * SMOOTHING; seg.push({ t: bucket, v: ema }); }
+    sum = 0; n = 0;
+  };
+  for (const pt of list) {
+    const v = pt[key];
+    if (v === null) { flush(); seg = null; bucket = null; ema = null; continue; }
+    const b = Math.max(t0, Math.floor(pt.t / BUCKET_MS) * BUCKET_MS);
+    if (!seg) { seg = []; segs.push(seg); }
+    if (b !== bucket) { flush(); bucket = b; }
+    sum += v; n++;
+  }
+  flush();
+  return segs;
+}
+
+// Monotone cubic (Fritsch–Butland) through the points: smooth, and never overshoots between samples.
+function monotonePath(p, move) {
+  if (!p.length) return "";
+  let d = `${move ? "M" : "L"}${p[0].x},${p[0].y}`;
+  const n = p.length, dx = [], sl = [], tg = [];
+  for (let i = 0; i < n - 1; i++) { dx[i] = p[i + 1].x - p[i].x; sl[i] = dx[i] ? (p[i + 1].y - p[i].y) / dx[i] : 0; }
+  for (let i = 0; i < n; i++) {
+    if (i === 0) tg[i] = sl[0] || 0;
+    else if (i === n - 1) tg[i] = sl[n - 2];
+    else tg[i] = sl[i - 1] * sl[i] <= 0 ? 0 : 3 * (dx[i - 1] + dx[i]) / ((2 * dx[i] + dx[i - 1]) / sl[i - 1] + (dx[i] + 2 * dx[i - 1]) / sl[i]);
+  }
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3;
+    d += `C${p[i].x + h},${p[i].y + tg[i] * h} ${p[i + 1].x - h},${p[i + 1].y - tg[i + 1] * h} ${p[i + 1].x},${p[i + 1].y}`;
+  }
+  return d;
 }
 
 // One loop: fold the latest data in at most once per frame, then ease everything toward it.
