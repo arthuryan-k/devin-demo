@@ -199,7 +199,18 @@ const model = { orders: new Map(), trades: [], stats: null, account: null, simul
 let dataDirty = false, tradesReset = true;
 let lastFeedSeq = 0, lastTradeN = 0;
 
+// Static (GitHub Pages) build: the engine and simulator run in this page, compiled from Java, behind the same API.
+const embedded = window.orderbook || null;
+
 async function api(method, url, body) {
+  if (embedded) {
+    const u = new URL(url, location.href);
+    const out = embedded.request(method, u.pathname, u.search.slice(1), body ? new URLSearchParams(body).toString() : "");
+    const nl = out.indexOf("\n");
+    const data = JSON.parse(out.slice(nl + 1));
+    if (Number(out.slice(0, nl)) >= 400) throw new Error(data.error || "error");
+    return data;
+  }
   const opts = { method };
   if (body) {
     opts.headers = { "Content-Type": "application/x-www-form-urlencoded" };
@@ -312,10 +323,8 @@ function connect() {
   sock.onopen = () => { retryMs = 250; stopPolling(); $("conn").textContent = "live"; $("conn").className = "on"; };
   sock.onmessage = ev => {
     const f = JSON.parse(ev.data);
-    if (f.type === "snapshot") applySnapshot(f);
-    else if (f.prevSeq !== streamSeq) { sock.close(); return; } // gap: reconnect, server replays or resnapshots
-    else applyDelta(f);
-    streamSeq = f.seq;
+    if (f.type !== "snapshot" && f.prevSeq !== streamSeq) { sock.close(); return; } // gap: server replays or resnapshots
+    applyFrame(f);
   };
   sock.onclose = () => {
     if (ws !== sock) return;
@@ -327,7 +336,18 @@ function connect() {
   };
 }
 
-const live = () => ws !== null && ws.readyState === WebSocket.OPEN;
+function applyFrame(f) {
+  if (f.type === "snapshot") applySnapshot(f); else applyDelta(f);
+  streamSeq = f.seq;
+}
+
+function connectEmbedded() {
+  $("conn").textContent = "in-browser"; $("conn").className = "on";
+  $("conn").title = "The engine and simulator run in this page (compiled from Java)";
+  embedded.connect(text => applyFrame(JSON.parse(text)));
+}
+
+const live = () => embedded !== null || ws !== null && ws.readyState === WebSocket.OPEN;
 
 async function poll() {
   if (polling || live()) return;
@@ -766,8 +786,7 @@ $("reset").addEventListener("click", () => command(() => api("POST", "/api/reset
 
 window.addEventListener("resize", () => { forceChart = true; });
 setType();
-connect();
-startPolling();
+if (embedded) connectEmbedded(); else { connect(); startPolling(); }
 requestAnimationFrame(frame);
 </script>
 </body>

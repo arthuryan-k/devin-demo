@@ -8,13 +8,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import orderbook.Command;
 import orderbook.Event;
@@ -58,7 +54,7 @@ public final class Simulator implements AutoCloseable {
 
     private static final long FIRST_SIM_PARTICIPANT_ID = 1001;
     private static final int MAX_TRACKED_ORDERS = 500_000;
-    private static final System.Logger LOG = System.getLogger(Simulator.class.getName());
+    private static final Logger LOG = Logger.getLogger(Simulator.class.getName());
 
     /** Notified on the simulator thread after every processed command, simulated or external. */
     @FunctionalInterface
@@ -76,8 +72,7 @@ public final class Simulator implements AutoCloseable {
     private final long seed;
     private final long startReferenceTicks;
     private final Random random;
-    private final ScheduledExecutorService executor;
-    private volatile Thread executorThread;
+    private final Scheduler scheduler;
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private volatile boolean running;
     private volatile double rate = DEFAULT_RATE;
@@ -97,13 +92,22 @@ public final class Simulator implements AutoCloseable {
     };
     private long nextParticipantId = FIRST_SIM_PARTICIPANT_ID;
     private long generation;
-    private ScheduledFuture<?> pending;
+    private Scheduler.Task pending;
 
     public Simulator(long seed) {
         this(seed, DEFAULT_START_REFERENCE_TICKS);
     }
 
+    /** Runs on the given loop instead of a dedicated thread (e.g. the browser's event loop). */
+    public Simulator(long seed, Scheduler scheduler) {
+        this(seed, DEFAULT_START_REFERENCE_TICKS, scheduler);
+    }
+
     public Simulator(long seed, long startReferenceTicks) {
+        this(seed, startReferenceTicks, new ExecutorScheduler("simulator"));
+    }
+
+    public Simulator(long seed, long startReferenceTicks, Scheduler scheduler) {
         if (startReferenceTicks <= 0) {
             throw new IllegalArgumentException("startReferenceTicks must be positive");
         }
@@ -111,13 +115,8 @@ public final class Simulator implements AutoCloseable {
         this.startReferenceTicks = startReferenceTicks;
         this.random = new Random(seed);
         this.reference = new ReferencePrice(startReferenceTicks);
-        this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r, "simulator");
-            thread.setDaemon(true);
-            executorThread = thread;
-            return thread;
-        });
-        LOG.log(System.Logger.Level.INFO, "Simulator seed={0}", Long.toString(seed));
+        this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
+        LOG.info("Simulator seed=" + seed);
     }
 
     public long seed() {
@@ -160,7 +159,7 @@ public final class Simulator implements AutoCloseable {
             running = false;
             generation++;
             if (pending != null) {
-                pending.cancel(false);
+                pending.cancel();
                 pending = null;
             }
             for (Participant participant : List.copyOf(participants)) {
@@ -179,7 +178,7 @@ public final class Simulator implements AutoCloseable {
             rate = ordersPerSecond;
             if (running) {
                 if (pending != null) {
-                    pending.cancel(false);
+                    pending.cancel();
                 }
                 scheduleNext(++generation);
             }
@@ -198,9 +197,9 @@ public final class Simulator implements AutoCloseable {
 
     @Override
     public void close() {
-        if (!executor.isShutdown()) {
+        if (!scheduler.isClosed()) {
             stop();
-            executor.shutdownNow();
+            scheduler.close();
         }
     }
 
@@ -214,25 +213,12 @@ public final class Simulator implements AutoCloseable {
 
     /** Runs {@code task} on the simulator thread (inline if already on it) and waits for its result. */
     public <T> T execute(Supplier<T> task) {
-        if (Thread.currentThread() == executorThread) {
-            return task.get();
-        }
-        Future<T> future = executor.submit(task::get);
-        try {
-            return future.get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted", e);
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof RuntimeException re) {
-                throw re;
-            }
-            if (cause instanceof Error error) {
-                throw error;
-            }
-            throw new IllegalStateException(cause);
-        }
+        return scheduler.execute(task);
+    }
+
+    /** The loop this simulator runs on; tasks scheduled here are serialized with simulation steps. */
+    public Scheduler scheduler() {
+        return scheduler;
     }
 
     public void run(Runnable task) {
@@ -316,17 +302,17 @@ public final class Simulator implements AutoCloseable {
 
     private void scheduleNext(long gen) {
         double delay = nextDelay();
-        pending = executor.schedule(() -> {
+        pending = scheduler.schedule(() -> {
             if (!running || gen != generation) {
                 return;
             }
             try {
                 step(delay);
             } catch (RuntimeException e) {
-                LOG.log(System.Logger.Level.ERROR, "simulation step failed", e);
+                LOG.log(Level.SEVERE, "simulation step failed", e);
             }
             scheduleNext(gen);
-        }, Math.max(1, (long) (delay * 1e9)), TimeUnit.NANOSECONDS);
+        }, Math.max(1, (long) (delay * 1e9)));
     }
 
     /** Exponential inter-arrival delay in seconds with mean {@code 1 / rate}. */
@@ -509,7 +495,7 @@ public final class Simulator implements AutoCloseable {
     }
 
     private void assertOnExecutor() {
-        if (Thread.currentThread() != executorThread) {
+        if (!scheduler.onLoop()) {
             throw new IllegalStateException("must be called on the simulator thread (use execute())");
         }
     }
