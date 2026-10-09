@@ -437,6 +437,9 @@ public final class Simulator implements AutoCloseable {
             return;
         }
         Command command = result.command();
+        if (command == null) {
+            return;
+        }
         engine.process(command);
         long participantId = result.participantId();
         List<Event> events = result.events();

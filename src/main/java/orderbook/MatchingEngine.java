@@ -1,6 +1,7 @@
 package orderbook;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -62,6 +63,79 @@ public final class MatchingEngine {
         }
         engine.commandLog = Objects.requireNonNull(commandLog, "commandLog");
         return engine;
+    }
+
+    /**
+     * Rebuilds an engine from a previously {@linkplain #exportState() exported} state, then attaches
+     * {@code commandLog}. The result is indistinguishable from the engine that exported the state: same book
+     * (including FIFO order and {@code seqNum}s), accepted IDs and counters.
+     *
+     * @throws IllegalArgumentException if the state is internally inconsistent
+     */
+    public static MatchingEngine restore(EngineState state, CommandLog commandLog) {
+        return restore(state, List.of(), commandLog);
+    }
+
+    /**
+     * {@link #restore(EngineState, CommandLog)}, then processes {@code tail} (without logging it) before attaching
+     * {@code commandLog}: snapshot plus journal tail.
+     */
+    public static MatchingEngine restore(EngineState state, Iterable<? extends Command> tail, CommandLog commandLog) {
+        Objects.requireNonNull(state, "state");
+        Objects.requireNonNull(commandLog, "commandLog");
+        MatchingEngine engine = new MatchingEngine();
+        for (long id : state.acceptedIds()) {
+            engine.acceptedIds.add(id);
+        }
+        engine.nextSeqNum = state.nextSeqNum();
+        engine.maxOrderIdSeen = state.maxOrderIdSeen();
+        restoreSide(engine, state.bids(), Side.BUY);
+        restoreSide(engine, state.asks(), Side.SELL);
+        if (engine.book.isCrossed()) {
+            throw new IllegalArgumentException("restored book is crossed");
+        }
+        for (Command command : tail) {
+            engine.process(command);
+        }
+        engine.commandLog = commandLog;
+        return engine;
+    }
+
+    private static void restoreSide(MatchingEngine engine, List<EngineState.RestingOrder> orders, Side side) {
+        for (EngineState.RestingOrder r : orders) {
+            if (r.side() != side) {
+                throw new IllegalArgumentException("order " + r.id() + " is on the wrong side");
+            }
+            if (!engine.acceptedIds.contains(r.id())) {
+                throw new IllegalArgumentException("resting order " + r.id() + " was never accepted");
+            }
+            if (r.seqNum() < 0 || r.seqNum() >= engine.nextSeqNum || r.qtyRemaining() <= 0) {
+                throw new IllegalArgumentException("invalid resting order " + r);
+            }
+            engine.book.add(r.toOrder());
+        }
+    }
+
+    /**
+     * A full copy of the engine's state (see {@link EngineState}); O(orders + accepted IDs). The returned value
+     * shares nothing with the engine.
+     */
+    public EngineState exportState() {
+        long[] ids = new long[acceptedIds.size()];
+        int i = 0;
+        for (long id : acceptedIds) {
+            ids[i++] = id;
+        }
+        Arrays.sort(ids);
+        return new EngineState(restingOrders(Side.BUY), restingOrders(Side.SELL), ids, nextSeqNum, maxOrderIdSeen);
+    }
+
+    private List<EngineState.RestingOrder> restingOrders(Side side) {
+        List<EngineState.RestingOrder> result = new ArrayList<>();
+        for (Order o : book.orders(side)) {
+            result.add(EngineState.RestingOrder.of(o));
+        }
+        return result;
     }
 
     public OrderBook book() {

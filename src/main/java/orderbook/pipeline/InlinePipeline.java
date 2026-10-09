@@ -24,17 +24,28 @@ public final class InlinePipeline implements Pipeline {
     @Override
     public long tryPublish(long participantId, Command command, boolean awaitResponse) {
         Objects.requireNonNull(command, "command");
-        return run(participantId, command, false, awaitResponse);
+        return run(participantId, command, false, false, awaitResponse);
     }
 
     @Override
     public long tryPublishReset() {
-        return run(0, null, true, false);
+        return run(0, null, true, false, false);
     }
 
-    private long run(long participantId, Command command, boolean reset, boolean awaitResponse) {
+    @Override
+    public long tryPublishSnapshot() {
+        return run(0, null, false, true, false);
+    }
+
+    @Override
+    public void setSnapshotInterval(int commands) {
+        engine.setSnapshotInterval(commands);
+    }
+
+    private long run(long participantId, Command command, boolean reset, boolean snapshotMarker,
+            boolean awaitResponse) {
         long seq = next++;
-        in.set(seq, participantId, command, reset, awaitResponse);
+        in.set(seq, participantId, command, reset, snapshotMarker, awaitResponse);
         engine.process(in, out);
         if (awaitResponse) {
             responses.put(seq, out.toResult());

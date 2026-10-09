@@ -7,8 +7,6 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -74,20 +72,23 @@ public final class DemoServer {
         attachJournal(simulator, System.getProperty("journal.path", System.getenv("JOURNAL_PATH")));
     }
 
-    /** {@code -Djournal.path=FILE} or {@code JOURNAL_PATH}: adds the journal writer to the output ring. */
+    /**
+     * {@code -Djournal.path=DIR} or {@code JOURNAL_PATH}: adds the journal writer to the output ring. Options:
+     * {@code -Djournal.durability=FLUSH|FSYNC}, {@code -Djournal.fsyncEvery=N} commands (default 64),
+     * {@code -Djournal.fsyncMillis=T} (default 10) and {@code -Djournal.snapshotEvery=N} commands (default 10000,
+     * 0 disables).
+     */
     private static void attachJournal(Simulator simulator, String path) {
         if (path == null || path.isBlank()) {
             return;
         }
-        Journal journal = new Journal(Path.of(path.trim()));
-        simulator.pipeline().addConsumer(new JournalHandler(journal, () -> {
-            try {
-                journal.close();
-                Files.deleteIfExists(journal.path());
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
-        }));
+        Journal.Options options = "FSYNC".equalsIgnoreCase(System.getProperty("journal.durability", "FLUSH"))
+                ? Journal.Options.fsync(Integer.getInteger("journal.fsyncEvery", 64),
+                        Long.getLong("journal.fsyncMillis", 10))
+                : Journal.Options.FLUSH;
+        Journal journal = new Journal(Path.of(path.trim()), options);
+        simulator.pipeline().addConsumer(new JournalHandler(journal));
+        simulator.pipeline().setSnapshotInterval(Integer.getInteger("journal.snapshotEvery", 10_000));
     }
 
     public static void main(String[] args) throws IOException {

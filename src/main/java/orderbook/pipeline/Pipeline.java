@@ -21,6 +21,18 @@ public interface Pipeline extends AutoCloseable {
     /** Publishes a reset marker: the engine starts over empty at the returned sequence. {@link #BUSY} if full. */
     long tryPublishReset();
 
+    /**
+     * Publishes a snapshot marker: at the returned sequence the engine serializes its state into the result (see
+     * {@link ResultEvent#snapshot()}) without changing it. {@link #BUSY} if full.
+     */
+    long tryPublishSnapshot();
+
+    /**
+     * Also snapshot automatically after every {@code commands} processed commands (0, the default, disables). The
+     * snapshot rides on that command's result, so it covers exactly that sequence.
+     */
+    void setSnapshotInterval(int commands);
+
     /** Waits for the result of an awaited command published at {@code seq}. */
     Result awaitResponse(long seq, long timeoutMillis);
 

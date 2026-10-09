@@ -24,9 +24,25 @@ deterministic and single-threaded, uses integer prices (ticks) and quantities, a
   cancelled, and the resting order is left alone.
 - **Validation:** invalid input is returned as `OrderRejected` events and never thrown. This covers non-positive
   price or quantity, duplicate order IDs, and unknown order IDs.
-- **Journal and replay:** `orderbook.journal.Journal` writes every command as JSON Lines. In the server it is an
-  output-ring handler (`-Djournal.path=FILE`), so commands are journaled in global sequence order.
-  `Journal.recover()` replays the journal to rebuild an identical book and counters, and tolerates a torn last line.
+- **Journal, snapshots and recovery:** `orderbook.journal.Journal` is an event-sourced log in a directory
+  (`-Djournal.path=DIR` in the server, where `JournalHandler` writes it from the output ring in global sequence order).
+  - *Format v2:* segments `journal-000001.log`, … start with `#orderbook-journal v2 base=<seq>`; each line is
+    `<crc32 hex>:{"seq":N,"cmd":…}` (CRC32 of the JSON). Unversioned v1 JSON Lines journals are rejected, not
+    silently read.
+  - *Snapshots:* `snapshot-<seq>.json` holds the complete engine state (every resting order with id, participant,
+    side, type, TIF, price, remaining qty and seqNum; accepted IDs; seqNum and order-ID counters) covering exactly
+    journal sequence `seq`. In the pipeline they are sequenced: `tryPublishSnapshot()` markers, every N commands
+    (`setSnapshotInterval`, `-Djournal.snapshotEvery`, default 10000) and resets. The engine thread serializes the
+    state into the result slot; the journal consumer writes it (temp file, fsync, atomic rename), then rotates to a
+    new segment.
+  - *Recovery:* `Journal.recover()` loads the newest snapshot and replays only entries with `seq` > its `seq`; with no
+    snapshot it replays every segment. A CRC or parse failure mid-segment is a hard corruption error; a torn or
+    corrupt last line is dropped and truncated on the next append.
+  - *Durability (`-Djournal.durability`):* `FLUSH` (default) writes each line to the OS: survives a process crash,
+    may lose recent commands on power loss or OS crash. `FSYNC` adds `FileChannel.force` every N commands or T ms,
+    whichever is first (`-Djournal.fsyncEvery=64`, `-Djournal.fsyncMillis=10`): an OS crash loses at most the
+    last unforced batch. Snapshots are always fsynced.
+  - *Retention:* covered segments and older snapshots are kept; `pruneCoveredSegments()` deletes them on demand.
 
 The book stores each side as a `TreeMap` of price levels with a FIFO queue per level, plus a hash index for O(1) cancels.
 
@@ -37,7 +53,7 @@ The engine runs behind an explicit [LMAX Disruptor](https://lmax-exchange.github
 engine, in what order, and who hears about the results.
 
 ```
- HTTP order/cancel/amend ─┐                                                     ┌─▶ JournalHandler (JSON Lines)
+ HTTP order/cancel/amend ─┐                                                     ┌─▶ JournalHandler (journal + snapshots)
                           ├─▶ Gateway ─tryPublishEvent─▶ input ring ─▶ engine ─▶ output ring ─┼─▶ MarketDataPublisher ─▶ GET /marketdata/stream (SSE)
  Simulator (personas) ────┘   account     CommandEvent    (1 thread,  ResultEvent ├─▶ ResponseRouter ─▶ CompletableFuture per HTTP caller
                               check       slot seq =      matching    same seq    └─▶ Simulator read model (replica book, personas)

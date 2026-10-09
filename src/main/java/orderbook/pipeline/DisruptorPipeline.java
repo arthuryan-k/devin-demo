@@ -70,6 +70,11 @@ public final class DisruptorPipeline implements Pipeline {
                 event.set(seq, 0, null, true, false);
                 a.claimed = seq;
             };
+    private final EventTranslatorTwoArg<CommandEvent, Command, Args> snapshotTranslator =
+            (event, seq, command, a) -> {
+                event.set(seq, 0, null, false, true, false);
+                a.claimed = seq;
+            };
     private final EventTranslatorTwoArg<ResultEvent, CommandEvent, EngineStage> resultTranslator =
             (out, seq, in, stage) -> stage.process(in, out);
 
@@ -106,6 +111,16 @@ public final class DisruptorPipeline implements Pipeline {
     @Override
     public long tryPublishReset() {
         return publish(resetTranslator, null, args.get());
+    }
+
+    @Override
+    public long tryPublishSnapshot() {
+        return publish(snapshotTranslator, null, args.get());
+    }
+
+    @Override
+    public void setSnapshotInterval(int commands) {
+        engine.setSnapshotInterval(commands);
     }
 
     /** The translator records the claimed slot sequence (the global seqNum) in the thread's {@link Args}. */

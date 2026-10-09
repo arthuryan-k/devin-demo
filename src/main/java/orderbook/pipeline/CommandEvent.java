@@ -12,13 +12,20 @@ public final class CommandEvent {
     long participantId;
     Command command;
     boolean reset;
+    boolean snapshotMarker;
     boolean awaited;
 
     void set(long seq, long participantId, Command command, boolean reset, boolean awaited) {
+        set(seq, participantId, command, reset, false, awaited);
+    }
+
+    void set(long seq, long participantId, Command command, boolean reset, boolean snapshotMarker,
+            boolean awaited) {
         this.seq = seq;
         this.participantId = participantId;
         this.command = command;
         this.reset = reset;
+        this.snapshotMarker = snapshotMarker;
         this.awaited = awaited;
     }
 
@@ -30,12 +37,16 @@ public final class CommandEvent {
         return participantId;
     }
 
-    /** The command, or null for a reset. */
+    /** The command, or null for a reset or snapshot marker. */
     public Command command() {
         return command;
     }
 
     public boolean isReset() {
         return reset;
+    }
+
+    public boolean isSnapshotMarker() {
+        return snapshotMarker;
     }
 }

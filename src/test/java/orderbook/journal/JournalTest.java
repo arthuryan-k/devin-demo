@@ -143,29 +143,54 @@ class JournalTest {
         assertTrue(journal.recover().book().isEmpty());
     }
 
+    /** {@code <crc32>:<json>}, as the journal writes it. */
+    static String checksummed(String json) {
+        return new String(Journal.line(json.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8).strip();
+    }
+
     @Test
     void tornFinalLineIsIgnoredOnReplayAndTruncatedOnNextAppend() throws IOException {
         Path file = dir.resolve("journal.jsonl");
         try (Journal journal = new Journal(file)) {
             journal.append(new Command.Place(new Order(1, Side.BUY, 100, 10)));
         }
-        Files.writeString(file, "{\"cmd\":\"place\",\"id\":2,\"part", StandardOpenOption.APPEND);
+        Path segment = file.resolve("journal-000001.log");
+        Files.writeString(segment, "0badc0de:{\"seq\":1,\"cmd\":\"place\",\"id\":2,\"part", StandardOpenOption.APPEND);
 
         try (Journal journal = new Journal(file)) {
             assertEquals(1, journal.replay().size());
             journal.append(new Command.Cancel(1));
-            assertEquals(List.of("{\"cmd\":\"place\",\"id\":1,\"participant\":0,\"side\":\"BUY\",\"type\":\"LIMIT\","
-                            + "\"tif\":\"GTC\",\"price\":100,\"qty\":10}", "{\"cmd\":\"cancel\",\"id\":1}"),
-                    Files.readAllLines(file, StandardCharsets.UTF_8));
+            assertEquals(List.of("#orderbook-journal v2 base=-1",
+                            checksummed("{\"seq\":0,\"cmd\":\"place\",\"id\":1,\"participant\":0,\"side\":\"BUY\","
+                                    + "\"type\":\"LIMIT\",\"tif\":\"GTC\",\"price\":100,\"qty\":10}"),
+                            checksummed("{\"seq\":1,\"cmd\":\"cancel\",\"id\":1}")),
+                    Files.readAllLines(segment, StandardCharsets.UTF_8));
         }
     }
 
     @Test
     void corruptCompleteLineFailsReplay() throws IOException {
         Path file = dir.resolve("journal.jsonl");
-        Files.writeString(file, "{\"cmd\":\"cancel\",\"id\":1}\nnot json\n");
+        Files.createDirectories(file);
+        Files.writeString(file.resolve("journal-000001.log"), "#orderbook-journal v2 base=-1\n"
+                + checksummed("{\"seq\":0,\"cmd\":\"cancel\",\"id\":1}") + "\nnot json\n"
+                + checksummed("{\"seq\":2,\"cmd\":\"cancel\",\"id\":1}") + "\n");
         IllegalStateException e = assertThrows(IllegalStateException.class, () -> new Journal(file).replay());
-        assertTrue(e.getMessage().contains("line 2"), e.getMessage());
+        assertTrue(e.getMessage().contains("line 3"), e.getMessage());
+    }
+
+    @Test
+    void unchecksummedV1JournalIsRejected() throws IOException {
+        Path file = dir.resolve("journal.jsonl");
+        Files.writeString(file, "{\"cmd\":\"cancel\",\"id\":1}\n");
+        assertThrows(IllegalStateException.class, () -> new Journal(file).replay());
+        assertThrows(IllegalStateException.class, () -> new Journal(file).append(new Command.Cancel(1)));
+
+        Path v1Segment = dir.resolve("v1dir");
+        Files.createDirectories(v1Segment);
+        Files.writeString(v1Segment.resolve("journal-000001.log"), "{\"cmd\":\"cancel\",\"id\":1}\n");
+        IllegalStateException e = assertThrows(IllegalStateException.class, () -> new Journal(v1Segment).replay());
+        assertTrue(e.getMessage().contains("v1"), e.getMessage());
     }
 
     @Test
