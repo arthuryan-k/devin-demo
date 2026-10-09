@@ -1,0 +1,594 @@
+package orderbook.sim;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+
+import orderbook.Command;
+import orderbook.Event;
+import orderbook.MatchingEngine;
+import orderbook.Order;
+import orderbook.OrderBook;
+import orderbook.Side;
+import orderbook.TimeInForce;
+
+/**
+ * Market simulation around one {@link MatchingEngine}. A weighted mix of {@link Persona}s trades around a hidden
+ * {@link ReferencePrice}; participants come and go (churn), more so after volatility shocks.
+ *
+ * <p>Threading: the engine and all simulation state are confined to one single-threaded executor. Every command,
+ * simulated or external ({@link #submit}), is processed there, and {@link #execute} runs arbitrary reads or
+ * check-then-act sequences there atomically. The engine itself is untouched: the simulator only issues
+ * {@link Command}s through {@link MatchingEngine#process}.
+ *
+ * <p>Order arrivals are a Poisson process: inter-arrival delays are exponential with mean {@code 1 / rate}. The same
+ * delays also drive simulated time, so with a given seed (and no external commands) the sequence of commands is
+ * reproducible regardless of wall-clock timing. Simulated participants never use {@link #USER_PARTICIPANT_ID}.
+ */
+public final class Simulator implements AutoCloseable {
+
+    public static final long USER_PARTICIPANT_ID = 1;
+    public static final String USER_LABEL = "YOU";
+    public static final long DEFAULT_START_REFERENCE_TICKS = 100_00;
+    public static final double DEFAULT_RATE = 5;
+    public static final double MAX_RATE = 100;
+
+    static final int MIN_PARTICIPANTS = 2;
+    static final int MAX_PARTICIPANTS = 8;
+    static final int INITIAL_PARTICIPANTS = 5;
+    /** Below this many participants, newcomers arrive faster. */
+    static final int TARGET_PARTICIPANTS = 4;
+    static final double BASE_EXIT_PER_SEC = 0.004;
+    static final double SHOCK_EXIT_MULTIPLIER = 40;
+    static final double ENTRY_PER_SEC = 0.04;
+    static final double REFILL_ENTRY_PER_SEC = 0.3;
+    static final double ENTRY_RAMP_SEC = 8;
+
+    private static final long FIRST_SIM_PARTICIPANT_ID = 1001;
+    private static final int MAX_TRACKED_ORDERS = 500_000;
+    private static final System.Logger LOG = System.getLogger(Simulator.class.getName());
+
+    /** Notified on the simulator thread after every processed command, simulated or external. */
+    @FunctionalInterface
+    public interface Listener {
+        void onCommand(long participantId, Command command, List<Event> events);
+    }
+
+    /** Public view of a participant; deliberately omits hidden traits such as risk tolerance. */
+    public record ParticipantInfo(long id, String label, Persona.Kind kind) {
+    }
+
+    private record OrderOwner(long participantId, Side side) {
+    }
+
+    private final long seed;
+    private final long startReferenceTicks;
+    private final Random random;
+    private final ScheduledExecutorService executor;
+    private volatile Thread executorThread;
+    private final List<Listener> listeners = new CopyOnWriteArrayList<>();
+    private volatile boolean running;
+    private volatile double rate = DEFAULT_RATE;
+
+    // Confined to the executor thread.
+    private MatchingEngine engine = new MatchingEngine();
+    private ReferencePrice reference;
+    private final List<Participant> participants = new ArrayList<>();
+    private final Map<Long, String> labels = new HashMap<>();
+    private final Map<Long, OrderOwner> owners = new LinkedHashMap<>() {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, OrderOwner> eldest) {
+            return size() > MAX_TRACKED_ORDERS;
+        }
+    };
+    private long nextParticipantId = FIRST_SIM_PARTICIPANT_ID;
+    private long generation;
+    private ScheduledFuture<?> pending;
+
+    public Simulator(long seed) {
+        this(seed, DEFAULT_START_REFERENCE_TICKS);
+    }
+
+    public Simulator(long seed, long startReferenceTicks) {
+        if (startReferenceTicks <= 0) {
+            throw new IllegalArgumentException("startReferenceTicks must be positive");
+        }
+        this.seed = seed;
+        this.startReferenceTicks = startReferenceTicks;
+        this.random = new Random(seed);
+        this.reference = new ReferencePrice(startReferenceTicks);
+        this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "simulator");
+            thread.setDaemon(true);
+            executorThread = thread;
+            return thread;
+        });
+        LOG.log(System.Logger.Level.INFO, "Simulator seed={0}", Long.toString(seed));
+    }
+
+    public long seed() {
+        return seed;
+    }
+
+    public long startingReferenceTicks() {
+        return startReferenceTicks;
+    }
+
+    public boolean isRunning() {
+        return running;
+    }
+
+    public double rate() {
+        return rate;
+    }
+
+    public void addListener(Listener listener) {
+        listeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    // ---- lifecycle ----------------------------------------------------------------------------------------------
+
+    /** Spawns the initial population if needed and starts the arrival loop. No-op if already running. */
+    public void start() {
+        run(() -> {
+            if (running) {
+                return;
+            }
+            populate();
+            running = true;
+            scheduleNext(++generation);
+        });
+    }
+
+    /** Stops the arrival loop, cancels every resting non-user order and removes all simulated participants. */
+    public void stop() {
+        run(() -> {
+            running = false;
+            generation++;
+            if (pending != null) {
+                pending.cancel(false);
+                pending = null;
+            }
+            for (Participant participant : List.copyOf(participants)) {
+                exit(participant);
+            }
+            cancelAllNonUserOrders();
+        });
+    }
+
+    /** Sets the mean number of simulation steps (order arrivals) per second; takes effect immediately. */
+    public void setRate(double ordersPerSecond) {
+        if (!(ordersPerSecond > 0 && ordersPerSecond <= MAX_RATE)) {
+            throw new IllegalArgumentException("rate must be in (0, " + MAX_RATE + "] orders/sec");
+        }
+        run(() -> {
+            rate = ordersPerSecond;
+            if (running) {
+                if (pending != null) {
+                    pending.cancel(false);
+                }
+                scheduleNext(++generation);
+            }
+        });
+    }
+
+    /** Stops the simulation and starts over with an empty engine and the starting reference price. */
+    public void reset() {
+        stop();
+        run(() -> {
+            engine = new MatchingEngine();
+            reference = new ReferencePrice(startReferenceTicks);
+            owners.clear();
+        });
+    }
+
+    @Override
+    public void close() {
+        if (!executor.isShutdown()) {
+            stop();
+            executor.shutdownNow();
+        }
+    }
+
+    // ---- command submission ---------------------------------------------------------------------------------------
+
+    /** Processes {@code command} on behalf of {@code participantId} on the simulator thread and returns its events. */
+    public List<Event> submit(long participantId, Command command) {
+        Objects.requireNonNull(command, "command");
+        return execute(() -> process(participantId, command));
+    }
+
+    /** Runs {@code task} on the simulator thread (inline if already on it) and waits for its result. */
+    public <T> T execute(Supplier<T> task) {
+        if (Thread.currentThread() == executorThread) {
+            return task.get();
+        }
+        Future<T> future = executor.submit(task::get);
+        try {
+            return future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new IllegalStateException(cause);
+        }
+    }
+
+    public void run(Runnable task) {
+        execute(() -> {
+            task.run();
+            return null;
+        });
+    }
+
+    /** The engine. Only use it on the simulator thread, i.e. inside {@link #execute} or a {@link Listener}. */
+    public MatchingEngine engine() {
+        assertOnExecutor();
+        return engine;
+    }
+
+    /** Owner of an order seen by this simulator, or {@link Order#NO_PARTICIPANT}. Simulator thread only. */
+    public long participantOf(long orderId) {
+        assertOnExecutor();
+        OrderOwner owner = owners.get(orderId);
+        return owner == null ? Order.NO_PARTICIPANT : owner.participantId();
+    }
+
+    /** Side of an order seen by this simulator, or null if unknown. Simulator thread only. */
+    public Side sideOf(long orderId) {
+        assertOnExecutor();
+        OrderOwner owner = owners.get(orderId);
+        return owner == null ? null : owner.side();
+    }
+
+    /** Display label: {@code "YOU"}, a persona label such as {@code "MM-1001"}, or {@code "P<id>"}. */
+    public String label(long participantId) {
+        assertOnExecutor();
+        if (participantId == USER_PARTICIPANT_ID) {
+            return USER_LABEL;
+        }
+        if (participantId == Order.NO_PARTICIPANT) {
+            return "anon";
+        }
+        String label = labels.get(participantId);
+        return label != null ? label : "P" + participantId;
+    }
+
+    public List<ParticipantInfo> participants() {
+        return execute(() -> participants.stream()
+                .map(p -> new ParticipantInfo(p.id(), p.label(), p.persona().kind()))
+                .toList());
+    }
+
+    private List<Event> process(long participantId, Command command) {
+        if (command instanceof Command.Place place && place.order().participantId() != participantId) {
+            throw new IllegalArgumentException("order participantId " + place.order().participantId()
+                    + " does not match submitter " + participantId);
+        }
+        List<Event> events = engine.process(command);
+        for (Event event : events) {
+            if (event instanceof Event.OrderPlaced placed && command instanceof Command.Place place) {
+                owners.put(placed.orderId(), new OrderOwner(participantId, place.order().side()));
+            } else if (event instanceof Event.TradeExecuted executed) {
+                creditFill(executed.trade().makerOrderId(), executed.trade().qty());
+                creditFill(executed.trade().takerOrderId(), executed.trade().qty());
+            }
+        }
+        for (Listener listener : listeners) {
+            listener.onCommand(participantId, command, events);
+        }
+        return events;
+    }
+
+    private void creditFill(long orderId, long qty) {
+        OrderOwner owner = owners.get(orderId);
+        if (owner == null) {
+            return;
+        }
+        Participant participant = find(owner.participantId());
+        if (participant != null) {
+            participant.persona().onFill(owner.side(), qty);
+        }
+    }
+
+    // ---- simulation loop ------------------------------------------------------------------------------------------
+
+    private void scheduleNext(long gen) {
+        double delay = nextDelay();
+        pending = executor.schedule(() -> {
+            if (!running || gen != generation) {
+                return;
+            }
+            try {
+                step(delay);
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.ERROR, "simulation step failed", e);
+            }
+            scheduleNext(gen);
+        }, Math.max(1, (long) (delay * 1e9)), TimeUnit.NANOSECONDS);
+    }
+
+    /** Exponential inter-arrival delay in seconds with mean {@code 1 / rate}. */
+    double nextDelay() {
+        return -Math.log(1 - random.nextDouble()) / rate;
+    }
+
+    /** One arrival: advance time and the reference price, apply churn, then let one participant act. */
+    void step(double dt) {
+        assertOnExecutor();
+        reference.advance(dt, random);
+        churn(dt);
+        Participant actor = pickActor();
+        if (actor != null) {
+            act(actor);
+        }
+    }
+
+    /** Runs {@code n} steps synchronously (for tests and deterministic replays). */
+    void runSteps(int n) {
+        run(() -> {
+            for (int i = 0; i < n; i++) {
+                step(nextDelay());
+            }
+        });
+    }
+
+    void populate() {
+        assertOnExecutor();
+        if (!participants.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < INITIAL_PARTICIPANTS; i++) {
+            Persona.Kind kind = i < 2 ? Persona.Kind.MARKET_MAKER : drawKind();
+            addParticipant(kind, random.nextDouble(), Double.NEGATIVE_INFINITY);
+        }
+    }
+
+    private void churn(double dt) {
+        for (Participant participant : List.copyOf(participants)) {
+            if (participants.size() <= MIN_PARTICIPANTS) {
+                break;
+            }
+            if (random.nextDouble() < probability(exitHazard(participant), dt)) {
+                exit(participant);
+            }
+        }
+        while (participants.size() < MIN_PARTICIPANTS) {
+            spawn();
+        }
+        if (participants.size() < MAX_PARTICIPANTS) {
+            double hazard = participants.size() < TARGET_PARTICIPANTS ? REFILL_ENTRY_PER_SEC : ENTRY_PER_SEC;
+            if (random.nextDouble() < probability(hazard, dt)) {
+                spawn();
+            }
+        }
+    }
+
+    /** Exit rate per simulated second: low at baseline, spiking after a shock, higher for cautious participants. */
+    double exitHazard(Participant participant) {
+        double sensitivity = sensitivity(participant.persona().riskTolerance());
+        return BASE_EXIT_PER_SEC * sensitivity * (1 + SHOCK_EXIT_MULTIPLIER * reference.shockIntensity() * sensitivity);
+    }
+
+    /** Maps risk tolerance in [0, 1] to a caution multiplier in [0.5, 1.5]. */
+    static double sensitivity(double riskTolerance) {
+        return 1.5 - riskTolerance;
+    }
+
+    static double probability(double hazardPerSec, double dt) {
+        return 1 - Math.exp(-hazardPerSec * dt);
+    }
+
+    private Participant pickActor() {
+        double total = 0;
+        double[] weights = new double[participants.size()];
+        for (int i = 0; i < weights.length; i++) {
+            Participant p = participants.get(i);
+            double ramp = Math.min(1, 0.2 + 0.8 * (reference.time() - p.spawnTime()) / ENTRY_RAMP_SEC);
+            weights[i] = p.persona().activityWeight() * ramp;
+            total += weights[i];
+        }
+        if (total <= 0) {
+            return null;
+        }
+        double x = random.nextDouble() * total;
+        for (int i = 0; i < weights.length; i++) {
+            x -= weights[i];
+            if (x < 0) {
+                return participants.get(i);
+            }
+        }
+        return participants.get(weights.length - 1);
+    }
+
+    private Persona.Kind drawKind() {
+        double total = 0;
+        for (Persona.Kind kind : Persona.Kind.values()) {
+            total += kind.spawnWeight();
+        }
+        double x = random.nextDouble() * total;
+        for (Persona.Kind kind : Persona.Kind.values()) {
+            x -= kind.spawnWeight();
+            if (x < 0) {
+                return kind;
+            }
+        }
+        return Persona.Kind.MARKET_MAKER;
+    }
+
+    private Participant spawn() {
+        boolean haveMaker = participants.stream().anyMatch(p -> p.persona().kind() == Persona.Kind.MARKET_MAKER);
+        Persona.Kind kind = haveMaker ? drawKind() : Persona.Kind.MARKET_MAKER;
+        return addParticipant(kind, random.nextDouble(), reference.time());
+    }
+
+    Participant addParticipant(Persona.Kind kind, double riskTolerance, double spawnTime) {
+        assertOnExecutor();
+        long id = nextParticipantId++;
+        String label = kind.labelPrefix() + "-" + id;
+        labels.put(id, label);
+        Participant participant = new Participant(id, label, Persona.create(kind, riskTolerance), spawnTime);
+        participants.add(participant);
+        return participant;
+    }
+
+    /** Cancels the participant's resting orders first, then removes it. */
+    void exit(Participant participant) {
+        assertOnExecutor();
+        for (Order order : ownOrders(participant.id())) {
+            process(participant.id(), new Command.Cancel(order.id()));
+        }
+        participants.remove(participant);
+    }
+
+    void act(Participant participant) {
+        assertOnExecutor();
+        participant.persona().act(new ActorContext(participant));
+    }
+
+    private void cancelAllNonUserOrders() {
+        for (Side side : Side.values()) {
+            for (Order order : engine.book().orders(side)) {
+                if (order.participantId() != USER_PARTICIPANT_ID) {
+                    process(order.participantId(), new Command.Cancel(order.id()));
+                }
+            }
+        }
+    }
+
+    private List<Order> ownOrders(long participantId) {
+        List<Order> own = new ArrayList<>();
+        for (Side side : Side.values()) {
+            for (Order order : engine.book().orders(side)) {
+                if (order.participantId() == participantId) {
+                    own.add(order);
+                }
+            }
+        }
+        return own;
+    }
+
+    private Participant find(long participantId) {
+        for (Participant participant : participants) {
+            if (participant.id() == participantId) {
+                return participant;
+            }
+        }
+        return null;
+    }
+
+    List<Participant> activeParticipants() {
+        assertOnExecutor();
+        return List.copyOf(participants);
+    }
+
+    ReferencePrice reference() {
+        assertOnExecutor();
+        return reference;
+    }
+
+    private void assertOnExecutor() {
+        if (Thread.currentThread() != executorThread) {
+            throw new IllegalStateException("must be called on the simulator thread (use execute())");
+        }
+    }
+
+    /** A persona's window onto the market; every action becomes a command from that participant. */
+    private final class ActorContext implements Persona.Context {
+        private final Participant self;
+
+        ActorContext(Participant self) {
+            this.self = self;
+        }
+
+        @Override
+        public Random random() {
+            return random;
+        }
+
+        @Override
+        public long referencePrice() {
+            return reference.ticks();
+        }
+
+        @Override
+        public double drift() {
+            return reference.drift();
+        }
+
+        @Override
+        public double shockIntensity() {
+            return reference.shockIntensity();
+        }
+
+        @Override
+        public OrderBook book() {
+            return engine.book();
+        }
+
+        @Override
+        public List<Order> ownOrders() {
+            return Simulator.this.ownOrders(self.id());
+        }
+
+        @Override
+        public void placeLimit(Side side, long price, long qty, TimeInForce timeInForce) {
+            Order order = Order.limit(engine.nextOrderId(), self.id(), side, Math.max(1, price), Math.max(1, qty),
+                    timeInForce);
+            process(self.id(), new Command.Place(order));
+        }
+
+        @Override
+        public void placeMarket(Side side, long qty) {
+            Order order = Order.market(engine.nextOrderId(), self.id(), side, Math.max(1, qty), TimeInForce.IOC);
+            process(self.id(), new Command.Place(order));
+        }
+
+        @Override
+        public void cancel(long orderId) {
+            requireOwn(orderId);
+            process(self.id(), new Command.Cancel(orderId));
+        }
+
+        @Override
+        public void amend(long orderId, Long newPrice, Long newQty) {
+            requireOwn(orderId);
+            Long price = newPrice == null ? null : Math.max(1, newPrice);
+            Long qty = newQty == null ? null : Math.max(1, newQty);
+            process(self.id(), new Command.Amend(orderId, price, qty));
+        }
+
+        @Override
+        public void shock(int direction) {
+            reference.jump(direction, random);
+        }
+
+        private void requireOwn(long orderId) {
+            boolean own = engine.book().find(orderId).map(o -> o.participantId() == self.id()).orElse(false);
+            if (!own) {
+                throw new IllegalStateException(self + " tried to touch order " + orderId + " it does not own");
+            }
+        }
+    }
+}

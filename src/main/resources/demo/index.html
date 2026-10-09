@@ -7,7 +7,7 @@
 <style>
   :root {
     --bg: #0f1419; --panel: #171e26; --border: #26313d; --text: #d7dee6; --muted: #7d8b99;
-    --bid: #22c55e; --bid-dim: #15803d; --ask: #ef4444; --ask-dim: #b91c1c; --accent: #60a5fa;
+    --bid: #22c55e; --bid-dim: #15803d; --ask: #ef4444; --ask-dim: #b91c1c; --accent: #60a5fa; --you: #facc15;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
@@ -17,7 +17,9 @@
   .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
   .stat .value { font-size: 18px; font-variant-numeric: tabular-nums; font-weight: 600; }
   .bid { color: var(--bid); } .ask { color: var(--ask); }
+  .you { color: var(--you); font-weight: 600; }
   main { display: grid; grid-template-columns: 300px 1fr; gap: 16px; padding: 16px 20px; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; min-width: 0; }
   .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
   .side-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
@@ -25,13 +27,24 @@
   .side-toggle button.active[data-side=BUY] { background: var(--bid-dim); color: #fff; border-color: var(--bid); }
   .side-toggle button.active[data-side=SELL] { background: var(--ask-dim); color: #fff; border-color: var(--ask); }
   label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
-  input { width: 100%; padding: 7px 9px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; font: inherit; font-variant-numeric: tabular-nums; }
-  input:focus { outline: 1px solid var(--accent); }
+  input, select { width: 100%; padding: 7px 9px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; font: inherit; font-variant-numeric: tabular-nums; }
+  input:focus, select:focus { outline: 1px solid var(--accent); }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   button.primary { width: 100%; margin-top: 12px; padding: 9px; border: 0; border-radius: 6px; font-weight: 600; cursor: pointer; color: #fff; }
   button.primary.BUY { background: var(--bid-dim); } button.primary.SELL { background: var(--ask-dim); }
-  .row-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 10px; }
-  .row-buttons button, button.small { padding: 6px 8px; border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 6px; cursor: pointer; font-size: 12px; }
-  .row-buttons button:hover, button.small:hover { border-color: var(--accent); }
+  #ticket-error { margin-top: 8px; color: #fca5a5; font-size: 12px; min-height: 1em; }
+  button.small { padding: 6px 8px; border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 6px; cursor: pointer; font-size: 12px; }
+  button.small:hover { border-color: var(--accent); }
+  button.small:disabled { opacity: .4; cursor: default; }
+  .sim-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
+  .sim-bar input[type=range] { width: 160px; padding: 0; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #4b5563; margin-right: 4px; }
+  .dot.on { background: var(--bid); }
+  #participants span { display: inline-block; margin-right: 8px; }
+  dl.sheet { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 0; font-variant-numeric: tabular-nums; }
+  dl.sheet dt { color: var(--muted); font-size: 12px; }
+  dl.sheet dd { margin: 0; text-align: right; font-weight: 600; }
+  dl.sheet .total { border-top: 1px solid var(--border); padding-top: 4px; }
   #chart-wrap { position: relative; }
   #chart { width: 100%; height: 400px; display: block; }
   #chart rect.order { cursor: pointer; }
@@ -39,17 +52,20 @@
   #tooltip { position: absolute; pointer-events: none; background: #0b0f14; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; display: none; white-space: nowrap; z-index: 10; }
   .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
   .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; background: var(--c); }
-  .bottom { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 16px; padding: 0 20px 20px; }
+  .bottom { display: grid; grid-template-columns: 1.3fr 1fr 1.2fr; gap: 16px; padding: 0 20px 20px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
   th { text-align: left; font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; padding: 4px 6px; border-bottom: 1px solid var(--border); }
   td { padding: 4px 6px; border-bottom: 1px solid #1d2630; }
   tr.hl td { background: #1f2a36; }
-  .scroll { max-height: 260px; overflow-y: auto; }
+  tr.mine td { background: rgba(250,204,21,.07); }
+  .scroll { max-height: 300px; overflow-y: auto; }
   .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
-  #log div { padding: 3px 0; border-bottom: 1px solid #1d2630; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  #log .OrderRejected, #log .error { color: #fca5a5; }
+  #log div { padding: 3px 0; border-bottom: 1px solid #1d2630; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  #log .OrderRejected, #log .AccountRejected, #log .error { color: #fca5a5; }
   #log .TradeExecuted { color: #fde68a; }
   #log .OrderCancelled { color: var(--muted); }
+  #log .OrderAmended { color: #a5b4fc; }
+  #log div.mine { border-left: 3px solid var(--you); padding-left: 5px; }
   @media (max-width: 1000px) { main, .bottom { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -59,49 +75,82 @@
   <div class="stat"><span class="label">Best bid</span><span class="value bid" id="s-bid">–</span></div>
   <div class="stat"><span class="label">Best ask</span><span class="value ask" id="s-ask">–</span></div>
   <div class="stat"><span class="label">Spread</span><span class="value" id="s-spread">–</span></div>
+  <div class="stat"><span class="label">Last</span><span class="value" id="s-last">–</span></div>
   <div class="stat"><span class="label">Resting orders</span><span class="value" id="s-resting">0</span></div>
   <div class="stat"><span class="label">Trades</span><span class="value" id="s-trades">0</span></div>
   <div class="stat"><span class="label">Volume</span><span class="value" id="s-volume">0</span></div>
 </header>
 
 <main>
-  <section class="panel">
-    <h2>Place limit order</h2>
-    <form id="ticket" autocomplete="off">
-      <div class="side-toggle">
-        <button type="button" data-side="BUY" class="active">BUY</button>
-        <button type="button" data-side="SELL">SELL</button>
-      </div>
-      <label for="price">Price (ticks)</label>
-      <input id="price" name="price" type="number" step="1" value="100" required>
-      <label for="qty">Quantity</label>
-      <input id="qty" name="qty" type="number" step="1" value="10" required>
-      <label for="oid">Order ID <span id="next-id">(blank = auto)</span></label>
-      <input id="oid" name="id" type="number" step="1" placeholder="auto">
-      <button type="submit" class="primary BUY" id="submit">Place BUY</button>
-    </form>
-    <h2 style="margin-top:18px">Cancel order</h2>
-    <form id="cancel-form" autocomplete="off" style="display:flex; gap:6px">
-      <input id="cancel-id" type="number" step="1" placeholder="order id" required>
-      <button type="submit" class="small">Cancel</button>
-    </form>
-    <h2 style="margin-top:18px">Helpers</h2>
-    <div class="row-buttons">
-      <button type="button" id="seed" title="Add ~20 non-crossing orders around 100">Seed book</button>
-      <button type="button" id="random" title="Place one random order near the mid; may cross">Random order</button>
-      <button type="button" id="reset" title="Start over with an empty engine">Reset</button>
-    </div>
-  </section>
+  <div class="col">
+    <section class="panel">
+      <h2>Order ticket — you trade as <span class="you">YOU</span></h2>
+      <form id="ticket" autocomplete="off">
+        <div class="side-toggle">
+          <button type="button" data-side="BUY" class="active">BUY</button>
+          <button type="button" data-side="SELL">SELL</button>
+        </div>
+        <div class="pair">
+          <div><label for="type">Type</label>
+            <select id="type"><option>LIMIT</option><option>MARKET</option></select></div>
+          <div><label for="tif">Time in force</label>
+            <select id="tif"><option>GTC</option><option>IOC</option><option>FOK</option></select></div>
+        </div>
+        <div id="price-row"><label for="price">Price</label>
+          <input id="price" name="price" type="number" step="0.01" min="0.01" value="100.00"></div>
+        <label for="qty">Quantity</label>
+        <input id="qty" name="qty" type="number" step="1" min="1" value="10" required>
+        <button type="submit" class="primary BUY" id="submit">Place BUY</button>
+        <div id="ticket-error"></div>
+      </form>
+      <h2 style="margin-top:14px">Cancel / amend your order</h2>
+      <form id="manage-form" autocomplete="off">
+        <div class="pair">
+          <input id="m-id" type="number" step="1" placeholder="order id" required>
+          <button type="button" class="small" id="cancel-btn">Cancel</button>
+        </div>
+        <div class="pair" style="margin-top:6px">
+          <input id="m-price" type="number" step="0.01" placeholder="new price">
+          <input id="m-qty" type="number" step="1" placeholder="new qty">
+        </div>
+        <button type="button" class="small" id="amend-btn" style="width:100%; margin-top:6px">Amend</button>
+      </form>
+    </section>
+    <section class="panel">
+      <h2>Balance sheet (<span class="you">YOU</span>)</h2>
+      <dl class="sheet">
+        <dt>Available cash</dt><dd id="b-avail">–</dd>
+        <dt>Reserved cash</dt><dd id="b-rcash">–</dd>
+        <dt>Total cash</dt><dd id="b-cash">–</dd>
+        <dt>Shares owned</dt><dd id="b-shares">–</dd>
+        <dt>Reserved shares</dt><dd id="b-rshares">–</dd>
+        <dt>Mark price (last trade)</dt><dd id="b-mark">–</dd>
+        <dt class="total">Mark-to-market equity</dt><dd class="total" id="b-equity">–</dd>
+      </dl>
+    </section>
+  </div>
 
   <section class="panel">
-    <h2>Book depth — one bar per price level, one segment per resting order (FIFO bottom → top). Click a segment to cancel it.</h2>
+    <div class="sim-bar">
+      <button type="button" class="small" id="sim-start">Simulate</button>
+      <button type="button" class="small" id="sim-stop">Stop</button>
+      <span><span class="dot" id="sim-dot"></span><span id="sim-status">stopped</span></span>
+      <label for="rate" style="margin:0">Rate</label>
+      <input id="rate" type="range" min="1" max="20" step="1" value="5">
+      <span id="rate-label">5 /sec</span>
+      <span id="sim-seed"></span>
+      <button type="button" class="small" id="reset" title="Stop the simulation and start over with an empty engine and a fresh account">Reset</button>
+    </div>
+    <div class="sim-bar" id="participants"></div>
+    <h2>Book depth — one bar per price level, one segment per resting order (FIFO bottom → top). Your orders are outlined. Click one of yours to cancel it.</h2>
     <div id="chart-wrap">
       <svg id="chart"></svg>
       <div id="tooltip"></div>
     </div>
     <div class="legend">
-      <span style="--c: var(--bid)">Bids (resting buy orders)</span>
-      <span style="--c: var(--ask)">Asks (resting sell orders)</span>
+      <span style="--c: var(--bid)">Bids</span>
+      <span style="--c: var(--ask)">Asks</span>
+      <span style="--c: var(--you)">YOUR orders</span>
       <span style="--c: rgba(96,165,250,.5)">Cumulative depth (right axis)</span>
       <span style="--c: #fde68a">Last trade price</span>
     </div>
@@ -128,8 +177,16 @@
 let side = "BUY";
 let book = null;
 let highlightId = null;
+let lastSeq = 0;
+let polling = false;
 const $ = id => document.getElementById(id);
 const SVG_NS = "http://www.w3.org/2000/svg";
+const CHART_HALF_WIDTH = 40;
+const T = p => Math.round(Number(p) * 100);
+const fmt = t => (t / 100).toFixed(2);
+const px = v => v === null || v === undefined ? "–" : Number(v).toFixed(2);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const who = p => p === "YOU" ? '<span class="you">YOU</span>' : esc(p ?? "?");
 
 async function api(method, url, body) {
   const opts = { method };
@@ -143,52 +200,109 @@ async function api(method, url, body) {
   return data;
 }
 
-function logLine(cls, text) {
+function logLine(cls, text, mine) {
   const div = document.createElement("div");
-  div.className = cls;
+  div.className = cls + (mine ? " mine" : "");
   div.textContent = text;
   $("log").prepend(div);
-  while ($("log").childElementCount > 200) $("log").lastChild.remove();
+  while ($("log").childElementCount > 300) $("log").lastChild.remove();
 }
 
-function logEvents(events) {
-  for (const e of events) {
-    switch (e.type) {
-      case "OrderPlaced": logLine(e.type, `PLACED   #${e.orderId} ${e.side} ${e.qty} @ ${e.price}`); break;
-      case "TradeExecuted": logLine(e.type, `TRADE    ${e.trade.qty} @ ${e.trade.price} (maker #${e.trade.makerOrderId}, taker #${e.trade.takerOrderId})`); break;
-      case "OrderCancelled": logLine(e.type, `CANCEL   #${e.orderId} (${e.cancelledQty} remaining)`); break;
-      case "OrderRejected": logLine(e.type, `REJECTED #${e.orderId}: ${e.reason}`); break;
+function describe(e) {
+  const p = e.participant;
+  switch (e.type) {
+    case "OrderPlaced": return [`PLACED   ${p} #${e.orderId} ${e.side} ${e.qty} @ ${e.price === null ? "MKT" : px(e.price)}`, p === "YOU"];
+    case "TradeExecuted": {
+      const t = e.trade;
+      return [`TRADE    ${t.qty} @ ${px(t.price)}  ${t.makerParticipant} #${t.makerOrderId} (maker) ← ${t.takerParticipant} #${t.takerOrderId} (taker${t.takerSide ? " " + t.takerSide : ""})`,
+        t.makerParticipant === "YOU" || t.takerParticipant === "YOU"];
     }
+    case "OrderCancelled": return [`CANCEL   ${p} #${e.orderId} ${e.cancelledQty} left (${e.reason})`, p === "YOU"];
+    case "OrderAmended": return [`AMEND    ${p} #${e.orderId} ${e.oldQty} @ ${px(e.oldPrice)} → ${e.newQty} @ ${px(e.newPrice)}${e.priorityRetained ? " (kept priority)" : " (lost priority)"}`, p === "YOU"];
+    case "OrderRejected": return [`REJECTED ${p} #${e.orderId}: ${e.reason}`, p === "YOU"];
+    case "AccountRejected": return [`REJECTED ${p} #${e.orderId}: ${e.reason} — ${e.message}`, true];
+  }
+  return [JSON.stringify(e), false];
+}
+
+function logFeed(events) {
+  for (const e of events) {
+    const [text, mine] = describe(e);
+    logLine(e.type, text, mine);
+    lastSeq = Math.max(lastSeq, e.seq);
   }
 }
 
-async function run(action) {
+async function poll() {
+  if (polling) return;
+  polling = true;
+  try {
+    const b = await api("GET", "/api/book?since=" + lastSeq);
+    logFeed(b.events);
+    render(b);
+  } catch (err) {
+    // server restarting or offline; retry on next tick
+  } finally {
+    polling = false;
+  }
+}
+
+function ticketError(text) { $("ticket-error").textContent = text || ""; }
+
+async function command(action) {
+  ticketError("");
   try {
     const data = await action();
-    if (data.events) logEvents(data.events);
-    render(data.book || data);
-    return data;
+    const bad = (data.events || []).find(e => e.type === "AccountRejected" || e.type === "OrderRejected");
+    if (bad) ticketError(bad.type === "AccountRejected" ? bad.message : "Rejected: " + bad.reason);
   } catch (err) {
-    logLine("error", "ERROR    " + err.message);
+    ticketError(err.message);
+    logLine("error", "ERROR    " + err.message, true);
   }
+  await poll();
 }
 
-const place = (s, price, qty, id) => run(() => api("POST", "/api/orders", { side: s, price, qty, id: id ?? "" }));
-const cancel = id => run(() => api("DELETE", "/api/orders/" + encodeURIComponent(id)));
+const cancel = id => command(() => api("DELETE", "/api/orders/" + encodeURIComponent(id)));
 
 function render(b) {
   book = b;
-  $("s-bid").textContent = b.bestBid ?? "–";
-  $("s-ask").textContent = b.bestAsk ?? "–";
-  $("s-spread").textContent = b.spread ?? "–";
-  const resting = [...b.bids, ...b.asks].reduce((n, l) => n + l.orders.length, 0);
-  $("s-resting").textContent = resting;
+  $("s-bid").textContent = px(b.bestBid);
+  $("s-ask").textContent = px(b.bestAsk);
+  $("s-spread").textContent = px(b.spread);
+  $("s-last").textContent = px(b.lastTradePrice);
+  $("s-resting").textContent = b.restingOrders;
   $("s-trades").textContent = b.tradeCount;
   $("s-volume").textContent = b.tradedVolume;
-  $("next-id").textContent = `(blank = auto, next #${b.nextOrderId})`;
+  renderAccount(b.account);
+  renderSim(b.simulation);
   renderOrders(b);
   renderTrades(b);
   renderChart(b);
+}
+
+function renderAccount(a) {
+  $("b-avail").textContent = px(a.availableCash);
+  $("b-rcash").textContent = px(a.reservedCash);
+  $("b-cash").textContent = px(a.cash);
+  $("b-shares").textContent = a.sharesOwned;
+  $("b-rshares").textContent = a.reservedShares;
+  $("b-mark").textContent = px(a.markPrice);
+  $("b-equity").textContent = px(a.equity);
+}
+
+function renderSim(s) {
+  $("sim-dot").classList.toggle("on", s.running);
+  $("sim-status").textContent = s.running ? "running" : "stopped";
+  $("sim-start").disabled = s.running;
+  $("sim-stop").disabled = !s.running;
+  $("sim-seed").textContent = "seed " + s.seed;
+  if (document.activeElement !== $("rate")) {
+    $("rate").value = Math.min(20, Math.max(1, Math.round(s.ratePerSec)));
+    $("rate-label").textContent = $("rate").value + " /sec";
+  }
+  $("participants").innerHTML = s.participants.length
+    ? "Active: " + s.participants.map(p => `<span title="${esc(p.kind)}">${esc(p.label)}</span>`).join("")
+    : "No simulated participants (press Simulate)";
 }
 
 function renderOrders(b) {
@@ -198,17 +312,19 @@ function renderOrders(b) {
       level.orders.forEach((o, i) => rows.push({ side: s, price: level.price, pos: i + 1, ...o }));
     }
   }
+  rows.sort((x, y) => (y.mine - x.mine));
   if (!rows.length) { $("orders").innerHTML = '<div class="empty">No resting orders</div>'; return; }
   const cls = s => s === "BUY" ? "bid" : "ask";
-  $("orders").innerHTML = `<table><thead><tr><th>Side</th><th>ID</th><th>Price</th><th>Qty</th><th>Queue pos</th><th>Seq</th><th></th></tr></thead><tbody>` +
-    rows.map(r => `<tr data-id="${r.id}" class="${r.id === highlightId ? "hl" : ""}"><td class="${cls(r.side)}">${r.side}</td><td>#${r.id}</td><td>${r.price}</td><td>${r.qty}</td><td>${r.pos}</td><td>${r.seqNum}</td>` +
-      `<td><button class="small" data-cancel="${r.id}">Cancel</button></td></tr>`).join("") + "</tbody></table>";
+  $("orders").innerHTML = `<table><thead><tr><th>Who</th><th>Side</th><th>ID</th><th>Price</th><th>Qty</th><th>Queue</th><th></th></tr></thead><tbody>` +
+    rows.map(r => `<tr data-id="${r.id}" class="${r.id === highlightId ? "hl" : ""} ${r.mine ? "mine" : ""}"><td>${who(r.participant)}</td><td class="${cls(r.side)}">${r.side}</td><td>#${r.id}</td><td>${px(r.price)}</td><td>${r.qty}</td><td>${r.pos}</td>` +
+      `<td>${r.mine ? `<button class="small" data-cancel="${r.id}">Cancel</button>` : ""}</td></tr>`).join("") + "</tbody></table>";
 }
 
 function renderTrades(b) {
   if (!b.trades.length) { $("trades").innerHTML = '<div class="empty">No trades yet</div>'; return; }
   $("trades").innerHTML = "<table><thead><tr><th>Price</th><th>Qty</th><th>Maker</th><th>Taker</th></tr></thead><tbody>" +
-    b.trades.map(t => `<tr><td>${t.price}</td><td>${t.qty}</td><td>#${t.makerOrderId}</td><td>#${t.takerOrderId}</td></tr>`).join("") + "</tbody></table>";
+    b.trades.map(t => `<tr class="${t.makerParticipant === "YOU" || t.takerParticipant === "YOU" ? "mine" : ""}"><td class="${t.takerSide === "BUY" ? "bid" : t.takerSide === "SELL" ? "ask" : ""}">${px(t.price)}</td><td>${t.qty}</td>` +
+      `<td>${who(t.makerParticipant)} #${t.makerOrderId}</td><td>${who(t.takerParticipant)} #${t.takerOrderId}</td></tr>`).join("") + "</tbody></table>";
 }
 
 function el(name, attrs, text) {
@@ -231,28 +347,35 @@ function renderChart(b) {
   const W = svg.clientWidth || 800, H = svg.clientHeight || 400;
   const m = { l: 50, r: 56, t: 16, b: 34 };
   const pw = W - m.l - m.r, ph = H - m.t - m.b;
-  const levels = [...b.bids.map(l => ({ ...l, side: "BUY" })), ...b.asks.map(l => ({ ...l, side: "SELL" }))];
-  const lastPrice = b.trades.length ? b.trades[0].price : null;
+  let levels = [...b.bids.map(l => ({ ...l, side: "BUY", t: T(l.price) })), ...b.asks.map(l => ({ ...l, side: "SELL", t: T(l.price) }))];
+  const lastT = b.lastTradePrice !== null ? T(b.lastTradePrice) : null;
 
   if (!levels.length) {
-    svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "#7d8b99" }, "Book is empty — place an order or click “Seed book”."));
+    svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "#7d8b99" }, "Book is empty — press “Simulate” or place an order."));
     return;
   }
 
-  const prices = levels.map(l => l.price);
-  if (lastPrice !== null) prices.push(lastPrice);
-  const minP = Math.min(...prices) - 1, maxP = Math.max(...prices) + 1;
+  const ticks = levels.map(l => l.t);
+  if (lastT !== null) ticks.push(lastT);
+  // Keep the view centred on the inside market so one far-away order doesn't squash the chart.
+  const center = b.bestBid !== null && b.bestAsk !== null ? Math.round((T(b.bestBid) + T(b.bestAsk)) / 2)
+    : lastT ?? Math.round((Math.min(...ticks) + Math.max(...ticks)) / 2);
+  const minP = Math.max(Math.min(...ticks), center - CHART_HALF_WIDTH) - 1;
+  const maxP = Math.min(Math.max(...ticks), center + CHART_HALF_WIDTH) + 1;
+  const hidden = levels.filter(l => l.t < minP || l.t > maxP).length;
+  levels = levels.filter(l => l.t >= minP && l.t <= maxP);
   const n = maxP - minP + 1;
   const step = pw / n;
   const barW = Math.max(1, Math.min(step * 0.78, 60));
   const xc = p => m.l + (p - minP + 0.5) * step;
 
+  if (hidden) svg.append(el("text", { x: m.l + pw, y: H - 2, "text-anchor": "end", fill: "#7d8b99", "font-size": 11 }, `${hidden} level${hidden > 1 ? "s" : ""} outside view`));
   const yMax = niceMax(Math.max(...levels.map(l => l.totalQty)) * 1.1);
   const y = q => m.t + ph - (q / yMax) * ph;
 
   let cumBid = 0, cumAsk = 0;
-  const bidCum = b.bids.map(l => ({ price: l.price, cum: (cumBid += l.totalQty) }));
-  const askCum = b.asks.map(l => ({ price: l.price, cum: (cumAsk += l.totalQty) }));
+  const bidCum = b.bids.map(l => ({ t: T(l.price), cum: (cumBid += l.totalQty) })).filter(pt => pt.t >= minP);
+  const askCum = b.asks.map(l => ({ t: T(l.price), cum: (cumAsk += l.totalQty) })).filter(pt => pt.t <= maxP);
   const cMax = niceMax(Math.max(cumBid, cumAsk) * 1.1);
   const yc = q => m.t + ph - (q / cMax) * ph;
 
@@ -265,23 +388,24 @@ function renderChart(b) {
   svg.append(el("text", { x: 12, y: m.t + ph / 2, fill: "#7d8b99", "font-size": 11, transform: `rotate(-90 12 ${m.t + ph / 2})`, "text-anchor": "middle" }, "qty at level"));
 
   if (b.bestBid !== null && b.bestAsk !== null) {
-    const x1 = xc(b.bestBid) + step / 2, x2 = xc(b.bestAsk) - step / 2;
+    const bb = T(b.bestBid), ba = T(b.bestAsk);
+    const x1 = xc(bb) + step / 2, x2 = xc(ba) - step / 2;
     if (x2 > x1) svg.append(el("rect", { x: x1, y: m.t, width: x2 - x1, height: ph, fill: "rgba(96,165,250,.06)" }));
-    svg.append(el("text", { x: (xc(b.bestBid) + xc(b.bestAsk)) / 2, y: m.t + 12, "text-anchor": "middle", fill: "#60a5fa", "font-size": 11 }, `spread ${b.spread}`));
+    svg.append(el("text", { x: (xc(bb) + xc(ba)) / 2, y: m.t + 12, "text-anchor": "middle", fill: "#60a5fa", "font-size": 11 }, `spread ${px(b.spread)}`));
   }
 
-  const labelEvery = Math.max(1, Math.ceil(n / Math.max(1, pw / 44)));
+  const labelEvery = Math.max(1, Math.ceil(n / Math.max(1, pw / 48)));
   for (let p = minP; p <= maxP; p++) {
     if ((p - minP) % labelEvery !== 0) continue;
     svg.append(el("line", { x1: xc(p), x2: xc(p), y1: m.t + ph, y2: m.t + ph + 4, stroke: "#4b5563" }));
-    svg.append(el("text", { x: xc(p), y: m.t + ph + 17, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, p));
+    svg.append(el("text", { x: xc(p), y: m.t + ph + 17, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, fmt(p)));
   }
-  svg.append(el("text", { x: m.l + pw / 2, y: H - 2, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, "price (ticks)"));
+  svg.append(el("text", { x: m.l + pw / 2, y: H - 2, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, "price"));
   svg.append(el("line", { x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph, stroke: "#4b5563" }));
 
-  if (lastPrice !== null) {
-    svg.append(el("line", { x1: xc(lastPrice), x2: xc(lastPrice), y1: m.t, y2: m.t + ph, stroke: "#fde68a", "stroke-dasharray": "2 3", "pointer-events": "none" }));
-    svg.append(el("text", { x: xc(lastPrice) + 4, y: m.t + 26, fill: "#fde68a", "font-size": 11 }, `last ${lastPrice}`));
+  if (lastT !== null && lastT >= minP && lastT <= maxP) {
+    svg.append(el("line", { x1: xc(lastT), x2: xc(lastT), y1: m.t, y2: m.t + ph, stroke: "#fde68a", "stroke-dasharray": "2 3", "pointer-events": "none" }));
+    svg.append(el("text", { x: xc(lastT) + 4, y: m.t + 26, fill: "#fde68a", "font-size": 11 }, `last ${px(b.lastTradePrice)}`));
   }
 
   for (const level of levels) {
@@ -289,26 +413,27 @@ function renderChart(b) {
     let base = 0;
     level.orders.forEach((o, i) => {
       const top = base + o.qty;
+      const hl = o.id === highlightId;
       const rect = el("rect", {
-        class: "order", x: xc(level.price) - barW / 2, y: y(top), width: barW, height: Math.max(1, y(base) - y(top)),
+        class: "order", x: xc(level.t) - barW / 2, y: y(top), width: barW, height: Math.max(1, y(base) - y(top)),
         fill: isBid ? (i % 2 ? "#16a34a" : "#22c55e") : (i % 2 ? "#dc2626" : "#ef4444"),
-        stroke: o.id === highlightId ? "#fff" : "#171e26", "stroke-width": o.id === highlightId ? 2 : 1,
+        stroke: hl ? "#fff" : o.mine ? "#facc15" : "#171e26", "stroke-width": hl || o.mine ? 2 : 1,
         "data-id": o.id, "data-side": level.side, "data-price": level.price, "data-qty": o.qty, "data-pos": i + 1,
-        "data-count": level.orders.length, "data-total": level.totalQty, "data-seq": o.seqNum
+        "data-count": level.orders.length, "data-total": level.totalQty, "data-seq": o.seqNum,
+        "data-who": o.participant, "data-mine": o.mine
       });
       svg.append(rect);
       base = top;
     });
     if (barW >= 16) {
-      svg.append(el("text", { x: xc(level.price), y: y(level.totalQty) - 4, "text-anchor": "middle", fill: isBid ? "#86efac" : "#fca5a5", "font-size": 10 }, level.totalQty));
+      svg.append(el("text", { x: xc(level.t), y: y(level.totalQty) - 4, "text-anchor": "middle", fill: isBid ? "#86efac" : "#fca5a5", "font-size": 10 }, level.totalQty));
     }
   }
 
   const stepPath = (pts, dir) => {
-    if (!pts.length) return "";
-    let d = `M ${xc(pts[0].price) - dir * step / 2} ${yc(0)} L ${xc(pts[0].price) - dir * step / 2} ${yc(pts[0].cum)}`;
+    let d = `M ${xc(pts[0].t) - dir * step / 2} ${yc(0)} L ${xc(pts[0].t) - dir * step / 2} ${yc(pts[0].cum)}`;
     pts.forEach((pt, i) => {
-      const xEnd = i + 1 < pts.length ? xc(pts[i + 1].price) - dir * step / 2 : xc(pt.price) + dir * step / 2;
+      const xEnd = i + 1 < pts.length ? xc(pts[i + 1].t) - dir * step / 2 : xc(pt.t) + dir * step / 2;
       d += ` L ${xEnd} ${yc(pt.cum)}`;
       if (i + 1 < pts.length) d += ` L ${xEnd} ${yc(pts[i + 1].cum)}`;
     });
@@ -317,14 +442,20 @@ function renderChart(b) {
   for (const [pts, dir, color] of [[bidCum, -1, "rgba(34,197,94,.55)"], [askCum, 1, "rgba(239,68,68,.55)"]]) {
     if (pts.length) svg.append(el("path", { d: stepPath(pts, dir), fill: "none", stroke: color, "stroke-width": 1.5, "stroke-dasharray": "5 3", "pointer-events": "none" }));
   }
-
 }
 
 function setSide(s) {
   side = s;
   document.querySelectorAll(".side-toggle button").forEach(b => b.classList.toggle("active", b.dataset.side === s));
   $("submit").className = "primary " + s;
-  $("submit").textContent = "Place " + s;
+  $("submit").textContent = `Place ${$("type").value} ${s}`;
+}
+
+function setType() {
+  const market = $("type").value === "MARKET";
+  $("price-row").style.display = market ? "none" : "";
+  if (market && $("tif").value === "GTC") $("tif").value = "IOC";
+  setSide(side);
 }
 
 function setHighlight(id) {
@@ -334,17 +465,20 @@ function setHighlight(id) {
 }
 
 document.querySelectorAll(".side-toggle button").forEach(b => b.addEventListener("click", () => setSide(b.dataset.side)));
+$("type").addEventListener("change", setType);
 
-$("ticket").addEventListener("submit", async ev => {
+$("ticket").addEventListener("submit", ev => {
   ev.preventDefault();
-  await place(side, $("price").value, $("qty").value, $("oid").value);
-  $("oid").value = "";
+  const type = $("type").value;
+  const form = { participantId: "YOU", side, type, timeInForce: $("tif").value, qty: $("qty").value };
+  if (type === "LIMIT") form.price = $("price").value;
+  command(() => api("POST", "/api/orders", form));
 });
 
-$("cancel-form").addEventListener("submit", async ev => {
-  ev.preventDefault();
-  await cancel($("cancel-id").value);
-  $("cancel-id").value = "";
+$("cancel-btn").addEventListener("click", () => { if ($("m-id").value) cancel($("m-id").value); });
+$("amend-btn").addEventListener("click", () => {
+  if (!$("m-id").value) return;
+  command(() => api("PATCH", "/api/orders/" + encodeURIComponent($("m-id").value), { price: $("m-price").value, qty: $("m-qty").value }));
 });
 
 $("orders").addEventListener("click", ev => {
@@ -361,9 +495,9 @@ const tooltip = $("tooltip");
 $("chart").addEventListener("mousemove", ev => {
   const d = ev.target.dataset;
   if (!d || !d.id) { tooltip.style.display = "none"; return; }
-  tooltip.innerHTML = `<b class="${d.side === "BUY" ? "bid" : "ask"}">${d.side} #${d.id}</b><br>` +
-    `${d.qty} @ ${d.price} &nbsp;·&nbsp; seq ${d.seq}<br>queue position ${d.pos} of ${d.count} (level total ${d.total})<br>` +
-    `<span style="color:#7d8b99">click to cancel</span>`;
+  tooltip.innerHTML = `<b class="${d.side === "BUY" ? "bid" : "ask"}">${d.side} #${d.id}</b> ${who(d.who)}<br>` +
+    `${d.qty} @ ${px(d.price)} &nbsp;·&nbsp; seq ${d.seq}<br>queue position ${d.pos} of ${d.count} (level total ${d.total})` +
+    (d.mine === "true" ? `<br><span style="color:#7d8b99">click to cancel</span>` : "");
   const wrap = $("chart-wrap").getBoundingClientRect();
   tooltip.style.display = "block";
   const left = Math.min(ev.clientX - wrap.left + 14, wrap.width - tooltip.offsetWidth - 4);
@@ -372,36 +506,25 @@ $("chart").addEventListener("mousemove", ev => {
 });
 $("chart").addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
 $("chart").addEventListener("click", ev => {
-  const id = ev.target.dataset && ev.target.dataset.id;
-  if (id) { tooltip.style.display = "none"; cancel(id); }
+  const d = ev.target.dataset;
+  if (d && d.id && d.mine === "true") { tooltip.style.display = "none"; cancel(d.id); }
 });
+
+$("sim-start").addEventListener("click", () => command(() => api("POST", "/simulate/start", {})));
+$("sim-stop").addEventListener("click", () => command(() => api("POST", "/simulate/stop", {})));
+$("rate").addEventListener("input", () => { $("rate-label").textContent = $("rate").value + " /sec"; });
+$("rate").addEventListener("change", () => command(() => api("POST", "/simulate/rate?perSec=" + $("rate").value, {})));
 
 $("reset").addEventListener("click", async () => {
-  await run(() => api("POST", "/api/reset", {}));
+  await command(() => api("POST", "/api/reset", {}));
   $("log").replaceChildren();
-  logLine("", "RESET    engine cleared");
-});
-
-$("seed").addEventListener("click", async () => {
-  const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
-  const bid = book && book.bestBid !== null ? book.bestBid : (book && book.bestAsk !== null ? book.bestAsk - 1 : 99);
-  const ask = book && book.bestAsk !== null ? book.bestAsk : bid + 2;
-  for (let i = 0; i < 10; i++) {
-    await place("BUY", bid - rnd(0, 6), rnd(1, 10) * 5);
-    await place("SELL", ask + rnd(0, 6), rnd(1, 10) * 5);
-  }
-});
-
-$("random").addEventListener("click", () => {
-  const mid = book && book.bestBid !== null && book.bestAsk !== null ? Math.round((book.bestBid + book.bestAsk) / 2)
-    : (book && (book.bestBid ?? book.bestAsk)) || 100;
-  const s = Math.random() < 0.5 ? "BUY" : "SELL";
-  const price = mid + Math.floor(Math.random() * 9) - 4;
-  place(s, price, (1 + Math.floor(Math.random() * 12)) * 5);
+  logLine("", "RESET    engine cleared, new account");
 });
 
 window.addEventListener("resize", () => book && renderChart(book));
-run(() => api("GET", "/api/book"));
+setType();
+poll();
+setInterval(poll, 500);
 </script>
 </body>
 </html>
