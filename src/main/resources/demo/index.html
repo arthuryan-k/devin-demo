@@ -825,13 +825,19 @@ function drawPriceChart(dt) {
     el("text", { x: W - m.r + 6, y: y(pTail) + 4, fill: "#fde68a", "font-size": 12, "font-weight": 600 }, lastPrice.toFixed(2))]));
 }
 
-// Averages values into BUCKET_MS buckets, then applies a light EMA; returns contiguous segments split at nulls.
-const BUCKET_MS = 500, SMOOTHING = 0.35;
+// Averages values into BUCKET_MS buckets, then applies a time-based EMA (dense bursts are smoothed, sparse trades are
+// followed closely); returns contiguous segments split at nulls.
+const BUCKET_MS = 500, SMOOTH_TAU_MS = 700;
 function smoothSeries(list, key, t0) {
   const segs = [];
-  let seg = null, bucket = null, sum = 0, n = 0, ema = null;
+  let seg = null, bucket = null, sum = 0, n = 0, ema = null, emaT = 0;
   const flush = () => {
-    if (n) { const mean = sum / n; ema = ema === null ? mean : ema + (mean - ema) * SMOOTHING; seg.push({ t: bucket, v: ema }); }
+    if (n) {
+      const mean = sum / n;
+      ema = ema === null ? mean : ema + (mean - ema) * (1 - Math.exp(-(bucket - emaT) / SMOOTH_TAU_MS));
+      emaT = bucket;
+      seg.push({ t: bucket, v: ema });
+    }
     sum = 0; n = 0;
   };
   for (const pt of list) {
