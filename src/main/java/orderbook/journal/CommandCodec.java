@@ -41,9 +41,27 @@ public final class CommandCodec {
         throw new IllegalArgumentException("unsupported command " + command);
     }
 
+    /** A command together with the global sequence number it was journaled at. */
+    public record Sequenced(long seq, Command command) {
+    }
+
+    /** {@link #encode} with a leading {@code "seq"} field: {@code {"seq":12,"cmd":"cancel","id":1}}. */
+    public static String encode(long seq, Command command) {
+        return "{\"seq\":" + seq + "," + encode(command).substring(1);
+    }
+
+    /** Inverse of {@link #encode(long, Command)}; the {@code "seq"} field is required. */
+    public static Sequenced decodeSequenced(String line) {
+        Map<String, String> f = new Parser(line).parseObject();
+        return new Sequenced(longField(f, "seq"), fromFields(f, line));
+    }
+
     /** @throws IllegalArgumentException if {@code line} is not a well-formed encoded command */
     public static Command decode(String line) {
-        Map<String, String> f = new Parser(line).parseObject();
+        return fromFields(new Parser(line).parseObject(), line);
+    }
+
+    private static Command fromFields(Map<String, String> f, String line) {
         String cmd = required(f, "cmd");
         long id = longField(f, "id");
         switch (cmd) {
@@ -69,7 +87,11 @@ public final class CommandCodec {
     }
 
     private static long longField(Map<String, String> f, String key) {
-        return Long.parseLong(required(f, key));
+        try {
+            return Long.parseLong(required(f, key));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("bad integer field '" + key + "'", e);
+        }
     }
 
     private static Long nullableLong(Map<String, String> f, String key) {

@@ -24,7 +24,7 @@ class JournalPropertiesTest {
     /** Random commands → journal file → fresh engine replay: same commands, events, book and counters. */
     @Property(tries = 200)
     void replayRebuildsIdenticalState(@ForAll("commands") List<Command> commands) throws IOException {
-        Path file = Files.createTempFile("journal", ".jsonl");
+        Path file = Files.createTempDirectory("journal");
         try {
             List<Event> originalEvents = new ArrayList<>();
             MatchingEngine original;
@@ -49,7 +49,48 @@ class JournalPropertiesTest {
             assertEquals(original.nextSeqNum(), fresh.nextSeqNum());
             assertEquals(original.nextOrderId(), fresh.nextOrderId());
         } finally {
-            Files.deleteIfExists(file);
+            deleteRecursively(file);
+        }
+    }
+
+    /** Snapshot at a random point, keep going, recover: same book and counters as replaying everything. */
+    @Property(tries = 200)
+    void snapshotPlusTailRecoversTheSameStateAsFullReplay(@ForAll("commands") List<Command> commands,
+            @ForAll @net.jqwik.api.constraints.IntRange(min = 0, max = 200) int split) throws IOException {
+        Path dir = Files.createTempDirectory("journal");
+        int at = Math.min(split, commands.size());
+        try {
+            MatchingEngine original;
+            try (Journal journal = new Journal(dir)) {
+                original = new MatchingEngine(journal);
+                commands.subList(0, at).forEach(original::process);
+                if (at > 0) {
+                    journal.snapshot(original);
+                }
+                commands.subList(at, commands.size()).forEach(original::process);
+            }
+            Journal.Recovery recovery = new Journal(dir).load();
+            assertEquals(commands.size() - at, at > 0 ? recovery.tail().size() : commands.size() - at);
+            assertEquals(at > 0, recovery.snapshot() != null);
+            MatchingEngine recovered = recovery.toEngine(c -> { });
+            MatchingEngine full = MatchingEngine.replay(commands, c -> { });
+            assertEquals(BookState.of(full.book()), BookState.of(recovered.book()));
+            assertEquals(BookState.of(original.book()), BookState.of(recovered.book()));
+            assertEquals(full.exportState(), recovered.exportState());
+            assertEquals(full.nextSeqNum(), recovered.nextSeqNum());
+            assertEquals(full.nextOrderId(), recovered.nextOrderId());
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
+
+    static void deleteRecursively(Path dir) throws IOException {
+        if (Files.exists(dir)) {
+            try (var files = Files.walk(dir)) {
+                for (Path p : files.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                    Files.delete(p);
+                }
+            }
         }
     }
 

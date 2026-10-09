@@ -169,6 +169,9 @@ public final class MarketDataPublisher implements ResultHandler {
             broadcast(snapshot("reset"));
             return;
         }
+        if (result.command() == null) {
+            return;
+        }
         broadcast(apply(result.participantId(), result.command(), result.events()));
     }
 
