@@ -7,11 +7,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
+import orderbook.sim.Scheduler;
 import orderbook.sim.Simulator;
 
 /**
@@ -39,7 +39,7 @@ final class BookStream {
     static final int MAX_QUEUED_FRAMES = 64;
     static final int REPLAY_FRAMES = 256;
     static final int SNAPSHOT_EVENTS = 100;
-    private static final System.Logger LOG = System.getLogger(BookStream.class.getName());
+    private static final Logger LOG = Logger.getLogger(BookStream.class.getName());
 
     /** JSON views of the server state. Simulator thread only. */
     interface Source {
@@ -69,7 +69,8 @@ final class BookStream {
     private final Simulator simulator;
     private final Source source;
     private final long flushMillis;
-    private ScheduledExecutorService flusher;
+    private volatile boolean closed;
+    private volatile Scheduler.Task pendingTick;
 
     // Confined to the simulator thread.
     private final Set<Long> dirtyOrders = new LinkedHashSet<>();
@@ -87,18 +88,27 @@ final class BookStream {
         this.flushMillis = flushMillis;
     }
 
+    /** Flushes every {@code flushMillis} on the simulator's loop. */
     void start() {
-        flusher = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "book-stream");
-            t.setDaemon(true);
-            return t;
-        });
-        flusher.scheduleWithFixedDelay(this::tick, flushMillis, flushMillis, TimeUnit.MILLISECONDS);
+        scheduleTick();
+    }
+
+    private void scheduleTick() {
+        if (closed) {
+            return;
+        }
+        try {
+            pendingTick = simulator.scheduler().schedule(this::tick, flushMillis * 1_000_000);
+        } catch (RejectedExecutionException e) {
+            // simulator shut down
+        }
     }
 
     void close() {
-        if (flusher != null) {
-            flusher.shutdownNow();
+        closed = true;
+        Scheduler.Task tick = pendingTick;
+        if (tick != null) {
+            tick.cancel();
         }
         try {
             simulator.run(() -> {
@@ -166,12 +176,11 @@ final class BookStream {
 
     private void tick() {
         try {
-            simulator.run(this::flush);
-        } catch (RejectedExecutionException e) {
-            // shutting down
+            flush();
         } catch (RuntimeException e) {
-            LOG.log(System.Logger.Level.WARNING, "book stream flush failed", e);
+            LOG.log(Level.WARNING, "book stream flush failed", e);
         }
+        scheduleTick();
     }
 
     private void flush() {

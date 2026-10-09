@@ -17,6 +17,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <junit.version>5.11.4</junit.version>
         <jqwik.version>1.9.2</jqwik.version>
+        <teavm.version>0.16.0</teavm.version>
         <jetty.version>12.1.14</jetty.version>
     </properties>
 
@@ -96,4 +97,67 @@
             </plugin>
         </plugins>
     </build>
+    <profiles>
+        <!-- Static GitHub Pages build: compiles the engine, simulator and DemoApp to JavaScript (scripts/build-pages.sh). -->
+        <profile>
+            <id>pages</id>
+            <dependencies>
+                <dependency>
+                    <groupId>org.teavm</groupId>
+                    <artifactId>teavm-classlib</artifactId>
+                    <version>${teavm.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.teavm</groupId>
+                    <artifactId>teavm-jso-apis</artifactId>
+                    <version>${teavm.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.6.0</version>
+                        <executions>
+                            <execution>
+                                <id>add-web-sources</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>add-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/web/java</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.teavm</groupId>
+                        <artifactId>teavm-maven-plugin</artifactId>
+                        <version>${teavm.version}</version>
+                        <executions>
+                            <execution>
+                                <id>web</id>
+                                <phase>process-classes</phase>
+                                <goals>
+                                    <goal>compile</goal>
+                                </goals>
+                                <configuration>
+                                    <mainClass>orderbook.demo.BrowserMain</mainClass>
+                                    <targetDirectory>${project.build.directory}/pages</targetDirectory>
+                                    <targetFileName>orderbook.js</targetFileName>
+                                    <minifying>true</minifying>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
