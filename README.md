@@ -75,21 +75,66 @@ core `orderbook` package still does no I/O; the file handling lives in `orderboo
 - No stop orders. Only one self-trade policy and one amend policy exist.
 - There's one instrument per engine.
 - The set of accepted order IDs (used to reject duplicates) grows without bound.
-- The browser demo below hasn't been updated for these features yet: it only places GTC limit orders and cancels.
 
-### Visual demo (browser UI)
+### Visual demo (browser UI) with market simulation
 ```
 mvn compile exec:java          # or: mvn compile exec:java -Dexec.args=9090
+SIM_SEED=42 mvn compile exec:java   # reproducible simulation (or -Dsim.seed=42); the seed is logged at startup
 ```
-Then open http://localhost:8080/. The `orderbook.demo.DemoServer` wraps one `MatchingEngine` behind the JDK's
-built-in `HttpServer`. It handles requests one at a time on a single thread, so the engine stays single-threaded, and
-the core `orderbook` package still does no I/O. The page lets you place limit orders and cancel them (from the table,
-by ID, or by clicking an order in the chart). It shows the book as one bar per price level, with each bar split into
-one segment per resting order in FIFO order, plus cumulative depth, the spread, the last trade price, a trade tape,
-and an event log. "Seed book" and "Random order" generate test flow.
+Then open http://localhost:8080/ and press **Simulate**. None of this touches the engine core: `MatchingEngine`,
+`OrderBook`, the types and the journal are unchanged, and the simulator and the account only build, check and submit
+`Command`s through `MatchingEngine.process()`.
 
-JSON API: `GET /api/book`, `POST /api/orders` (form fields `side`, `price`, `qty`, optional `id`),
-`DELETE /api/orders/{id}`, `POST /api/reset`.
+**`orderbook.sim.Simulator`** owns the `MatchingEngine` and a single-threaded executor. Every command, simulated or
+from HTTP, runs on that one thread (`submit`, `execute`), so the engine stays single-threaded. `start()`, `stop()` and
+`setRate(ordersPerSecond)` control a Poisson arrival loop (exponential inter-arrival delays) driven by one seedable
+`Random`. Each arrival:
+- advances a hidden reference price: a small random walk plus rare jumps (about one per 2 simulated minutes). A jump
+  starts a 12 s volatility shock that fades linearly. During it volatility is higher, market makers quote wider, and
+  participants are more likely to leave;
+- applies churn: 2–8 participants, low baseline exit rate that spikes after shocks, and an exit cancels the
+  participant's resting orders first. New entrants ramp up their activity;
+- lets one participant act, chosen by activity weight. Each participant gets a persona and a hidden `riskTolerance`
+  in [0, 1] when it spawns:
+
+| Persona | Spawn weight | Behaviour |
+|---|---|---|
+| `MarketMaker` (`MM-n`) | ~58% | Small GTC quotes near the reference (peaked distance and size), re-quotes (amends) stale quotes when the reference drifts, re-seeds an empty side. Lower risk tolerance = wider spread, more widening in shocks, quicker exits. Keeps a signed counter of its own fills and shrinks quotes on the side that would add to that inventory. |
+| `AggressiveTaker` (`TAKER-n`) | ~19% | Market and IOC orders, occasional multi-level sweeps; buys with probability 55% when the reference recently rose (45% when it fell). |
+| `MaintenanceTrader` (`MAINT-n`) | ~19% | Keeps a few GTC orders and cancels, resizes or reprices them. |
+| `Whale` (`WHALE-n`) | ~4% | Rare large market sweeps that trigger a volatility shock. |
+
+`stop()` cancels every simulated order and removes the participants. Simulated participants never use the user's ID
+and are not limited by the account system.
+
+**`orderbook.demo.Account`** applies only to you (`"YOU"`) and is checked before your commands reach the engine.
+It tracks cash, reserved cash, shares owned and reserved shares; neither cash nor shares can go negative (no short
+selling, no credit). Starting cash is random but at least twice the starting reference price; you start with 0 shares.
+- Limit buy: reserves `price × qty`; rejected if available cash is short. A fill pays the trade price and releases the
+  reservation at the limit price, so a better fill refunds the difference. Cancel or expiry releases the rest.
+- Market buy: reserves a conservative estimate: the larger of the cost of sweeping the current asks and
+  `best ask (else last trade) × qty × 1.05`. Each fill releases exactly what it cost; the rest is released when the
+  remainder is cancelled.
+- Sell (limit or market): rejected if `qty > sharesOwned - reservedShares`; reserves the shares until fill or cancel.
+- Amend: re-reserves for the new price/qty (a decrease releases, an increase needs more and can be rejected).
+- Mark-to-market equity = cash + shares × last trade price.
+
+Rejections (insufficient funds or shares, or touching someone else's order) are shown as ticket errors and as
+`AccountRejected` entries in the event log.
+
+The page has Simulate/Stop and a 1–20 orders/sec rate slider, an order ticket (BUY/SELL, LIMIT/MARKET,
+GTC/IOC/FOK; no price for MARKET), cancel/amend by ID, and a balance sheet. The depth chart shows one bar per price
+level split into one segment per resting order (FIFO), plus cumulative depth, spread and last trade price. The
+resting-orders table, trade tape and event log show who owns each order, and your orders and trades are
+highlighted. The page polls about every 500 ms.
+
+JSON API (prices and cash are decimals with tick size 0.01; integer ticks inside the engine):
+- `GET /api/book[?since=seq]`: book depth with per-order participant, trades, account, simulation status and
+  participants, and event-feed entries newer than `since` (all engine event types plus `AccountRejected`).
+- `POST /api/orders`: form fields `side`, `qty`, optional `type` (`LIMIT`|`MARKET`, default `LIMIT`), `price`
+  (LIMIT only), `timeInForce` (`GTC`|`IOC`|`FOK`, default `GTC`), `participantId` (only `YOU`), `id`.
+- `PATCH /api/orders/{id}` (`price` and/or `qty`), `DELETE /api/orders/{id}`: your orders only.
+- `POST /simulate/start`, `POST /simulate/stop`, `POST /simulate/rate?perSec=N`, `POST /api/reset`.
 
 ### Build and test
 ```
@@ -105,3 +150,11 @@ cancel-taker, and journal round-trip / torn-write handling. The jqwik property t
   never changes the book. No trade pairs two orders from the same participant.
 - Journal round-trip: write the commands to a journal, replay them into a fresh engine, and get the same commands,
   events, book, and counters.
+
+Simulator tests cover start/stop (stop cancels every simulated order), rate validation and exponential inter-arrivals,
+exits cancelling the leaving participant's orders, the 2–8 participant bounds, shocks raising exit probability and
+widening quotes, re-quoting after drift, re-seeding an empty side, the direction of inventory skew, the 55/45 taker
+bias, same-seed reproducibility, and that simulated flow only sends legal commands for its own orders and never acts
+as `YOU`. Account tests cover starting cash, reserving and releasing on fill/cancel, refunds when a buy fills below
+its limit, insufficient funds and shares, amends, market-order reservations, engine-rejection rollback, and a jqwik
+property that cash and shares never go negative. `DemoServerTest` covers the HTTP API end to end.
