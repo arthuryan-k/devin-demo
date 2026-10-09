@@ -67,6 +67,14 @@
   #log .OrderAmended { color: #a5b4fc; }
   #log div.mine { border-left: 3px solid var(--you); padding-left: 5px; }
   @media (max-width: 1000px) { main, .bottom { grid-template-columns: 1fr; } }
+  .flash-up { animation: flash-up .6s ease-out; }
+  .flash-down { animation: flash-down .6s ease-out; }
+  @keyframes flash-up { from { background: rgba(34,197,94,.35); } to { background: transparent; } }
+  @keyframes flash-down { from { background: rgba(239,68,68,.35); } to { background: transparent; } }
+  tr.new, #log > div { animation: slide-in .25s ease-out; }
+  @keyframes slide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  #conn { font-size: 11px; color: #7d8b99; margin-left: 8px; }
+  #conn.on { color: #22c55e; }
 </style>
 </head>
 <body>
@@ -138,7 +146,7 @@
       <label for="rate" style="margin:0">Rate</label>
       <input id="rate" type="range" min="1" max="20" step="1" value="5">
       <span id="rate-label">5 /sec</span>
-      <span id="sim-seed"></span>
+      <span id="sim-seed"></span><span id="conn" title="Data transport: live WebSocket stream, or polling while it reconnects">connecting</span>
       <button type="button" class="small" id="reset" title="Stop the simulation and start over with an empty engine and a fresh account">Reset</button>
     </div>
     <div class="sim-bar" id="participants"></div>
@@ -175,18 +183,21 @@
 <script>
 "use strict";
 let side = "BUY";
-let book = null;
 let highlightId = null;
-let lastSeq = 0;
-let polling = false;
 const $ = id => document.getElementById(id);
 const SVG_NS = "http://www.w3.org/2000/svg";
 const CHART_HALF_WIDTH = 40;
+const MAX_TRADES = 50;
 const T = p => Math.round(Number(p) * 100);
 const fmt = t => (t / 100).toFixed(2);
 const px = v => v === null || v === undefined ? "–" : Number(v).toFixed(2);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const who = p => p === "YOU" ? '<span class="you">YOU</span>' : esc(p ?? "?");
+
+// ---- local model, fed by the /ws stream (or /api/book polling as a fallback) ----------------------------------------
+const model = { orders: new Map(), trades: [], stats: null, account: null, simulation: null };
+let dataDirty = false, tradesReset = true;
+let lastFeedSeq = 0, lastTradeN = 0;
 
 async function api(method, url, body) {
   const opts = { method };
@@ -227,25 +238,110 @@ function describe(e) {
 
 function logFeed(events) {
   for (const e of events) {
+    if (e.seq <= lastFeedSeq) continue;
     const [text, mine] = describe(e);
     logLine(e.type, text, mine);
-    lastSeq = Math.max(lastSeq, e.seq);
+    lastFeedSeq = e.seq;
   }
 }
 
+function clearForReset() {
+  $("log").replaceChildren();
+  lastFeedSeq = 0;
+  logLine("", "RESET    engine cleared, new account");
+}
+
+function addTrades(newestFirst) {
+  for (let i = newestFirst.length - 1; i >= 0; i--) {
+    const t = newestFirst[i];
+    if (t.n <= lastTradeN) continue;
+    lastTradeN = t.n;
+    model.trades.unshift(t);
+  }
+  model.trades.length = Math.min(model.trades.length, MAX_TRADES);
+}
+
+function replaceAll(orders, trades, stats, account, simulation) {
+  model.orders = new Map(orders.map(o => [o.id, o]));
+  model.trades = [];
+  lastTradeN = 0;
+  addTrades(trades);
+  tradesReset = true;
+  Object.assign(model, { stats, account, simulation });
+  dataDirty = true;
+}
+
+function applySnapshot(f) {
+  if (f.reason === "reset") clearForReset();
+  replaceAll(f.orders, f.trades, f.stats, f.account, f.simulation);
+  logFeed(f.events);
+}
+
+function applyDelta(f) {
+  for (const o of f.orders) model.orders.set(o.id, o);
+  for (const id of f.removed) model.orders.delete(id);
+  addTrades(f.trades);
+  Object.assign(model, { stats: f.stats, account: f.account, simulation: f.simulation });
+  logFeed(f.events);
+  dataDirty = true;
+}
+
+// Polling fallback: /api/book carries the same data shaped as price levels.
+function applyBook(b) {
+  const orders = [];
+  for (const [s, levels] of [["BUY", b.bids], ["SELL", b.asks]]) {
+    for (const level of levels) for (const o of level.orders) orders.push({ ...o, side: s, price: level.price });
+  }
+  const { bestBid, bestAsk, spread, lastTradePrice, restingOrders, tradeCount, tradedVolume } = b;
+  if (tradeCount < lastTradeN) clearForReset();
+  model.orders = new Map(orders.map(o => [o.id, o]));
+  addTrades(b.trades);
+  Object.assign(model, { stats: { bestBid, bestAsk, spread, lastTradePrice, restingOrders, tradeCount, tradedVolume },
+    account: b.account, simulation: b.simulation });
+  logFeed(b.events);
+  dataDirty = true;
+}
+
+// ---- transport: WebSocket with resume, polling while it is down ------------------------------------------------------
+let ws = null, streamSeq = 0, retryMs = 250, pollTimer = null, polling = false;
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const sock = new WebSocket(`${proto}//${location.host}/ws${streamSeq ? "?since=" + streamSeq : ""}`);
+  ws = sock;
+  sock.onopen = () => { retryMs = 250; stopPolling(); $("conn").textContent = "live"; $("conn").className = "on"; };
+  sock.onmessage = ev => {
+    const f = JSON.parse(ev.data);
+    if (f.type === "snapshot") applySnapshot(f);
+    else if (f.prevSeq !== streamSeq) { sock.close(); return; } // gap: reconnect, server replays or resnapshots
+    else applyDelta(f);
+    streamSeq = f.seq;
+  };
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    ws = null;
+    $("conn").textContent = "polling"; $("conn").className = "";
+    startPolling();
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 5000);
+  };
+}
+
+const live = () => ws !== null && ws.readyState === WebSocket.OPEN;
+
 async function poll() {
-  if (polling) return;
+  if (polling || live()) return;
   polling = true;
   try {
-    const b = await api("GET", "/api/book?since=" + lastSeq);
-    logFeed(b.events);
-    render(b);
+    applyBook(await api("GET", "/api/book?since=" + lastFeedSeq));
   } catch (err) {
     // server restarting or offline; retry on next tick
   } finally {
     polling = false;
   }
 }
+function startPolling() { if (!pollTimer) { poll(); pollTimer = setInterval(poll, 500); } }
+function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
 
 function ticketError(text) { $("ticket-error").textContent = text || ""; }
 
@@ -264,32 +360,55 @@ async function command(action) {
 
 const cancel = id => command(() => api("DELETE", "/api/orders/" + encodeURIComponent(id)));
 
-function render(b) {
-  book = b;
-  $("s-bid").textContent = px(b.bestBid);
-  $("s-ask").textContent = px(b.bestAsk);
-  $("s-spread").textContent = px(b.spread);
-  $("s-last").textContent = px(b.lastTradePrice);
-  $("s-resting").textContent = b.restingOrders;
-  $("s-trades").textContent = b.tradeCount;
-  $("s-volume").textContent = b.tradedVolume;
-  renderAccount(b.account);
-  renderSim(b.simulation);
-  renderOrders(b);
-  renderTrades(b);
-  renderChart(b);
+// ---- animation: data sets targets, a frame loop eases what is drawn toward them -------------------------------------
+const ease = (cur, target, dt, tau) => cur + (target - cur) * (1 - Math.exp(-dt / tau));
+const near = (a, b, eps) => Math.abs(a - b) < eps;
+
+const tweens = new Map();
+function setNumber(id, value, decimals) {
+  const node = $(id);
+  if (value === null || value === undefined) { tweens.delete(id); node.textContent = "–"; return; }
+  const v = Number(value);
+  const tw = tweens.get(id);
+  if (!tw) { tweens.set(id, { cur: v, target: v, decimals }); node.textContent = v.toFixed(decimals); return; }
+  if (v !== tw.target) flash(node, v > tw.target);
+  tw.target = v;
+}
+function flash(node, up) {
+  node.classList.remove("flash-up", "flash-down");
+  void node.offsetWidth;
+  node.classList.add(up ? "flash-up" : "flash-down");
+}
+function stepTweens(dt) {
+  let moving = false;
+  for (const [id, tw] of tweens) {
+    if (tw.cur === tw.target) continue;
+    tw.cur = ease(tw.cur, tw.target, dt, 90);
+    if (near(tw.cur, tw.target, Math.pow(10, -tw.decimals) / 2)) tw.cur = tw.target; else moving = true;
+    $(id).textContent = tw.cur.toFixed(tw.decimals);
+  }
+  return moving;
 }
 
-function renderAccount(a) {
-  $("b-avail").textContent = px(a.availableCash);
-  $("b-rcash").textContent = px(a.reservedCash);
-  $("b-cash").textContent = px(a.cash);
-  $("b-shares").textContent = a.sharesOwned;
-  $("b-rshares").textContent = a.reservedShares;
-  $("b-mark").textContent = px(a.markPrice);
-  $("b-equity").textContent = px(a.equity);
+function renderNumbers() {
+  const s = model.stats, a = model.account;
+  setNumber("s-bid", s.bestBid, 2);
+  setNumber("s-ask", s.bestAsk, 2);
+  setNumber("s-spread", s.spread, 2);
+  setNumber("s-last", s.lastTradePrice, 2);
+  setNumber("s-resting", s.restingOrders, 0);
+  setNumber("s-trades", s.tradeCount, 0);
+  setNumber("s-volume", s.tradedVolume, 0);
+  setNumber("b-avail", a.availableCash, 2);
+  setNumber("b-rcash", a.reservedCash, 2);
+  setNumber("b-cash", a.cash, 2);
+  setNumber("b-shares", a.sharesOwned, 0);
+  setNumber("b-rshares", a.reservedShares, 0);
+  setNumber("b-mark", a.markPrice, 2);
+  setNumber("b-equity", a.equity, 2);
 }
 
+let lastParticipants = "";
 function renderSim(s) {
   $("sim-dot").classList.toggle("on", s.running);
   $("sim-status").textContent = s.running ? "running" : "stopped";
@@ -300,39 +419,93 @@ function renderSim(s) {
     $("rate").value = Math.min(20, Math.max(1, Math.round(s.ratePerSec)));
     $("rate-label").textContent = $("rate").value + " /sec";
   }
-  $("participants").innerHTML = s.participants.length
+  const html = s.participants.length
     ? "Active: " + s.participants.map(p => `<span title="${esc(p.kind)}">${esc(p.label)}</span>`).join("")
     : "No simulated participants (press Simulate)";
+  if (html !== lastParticipants) $("participants").innerHTML = lastParticipants = html;
 }
 
-function renderOrders(b) {
-  const rows = [];
-  for (const [s, levels] of [["BUY", b.bids], ["SELL", b.asks]]) {
-    for (const level of levels) {
-      level.orders.forEach((o, i) => rows.push({ side: s, price: level.price, pos: i + 1, ...o }));
-    }
+// Price levels in book order: bids high→low, asks low→high, each level FIFO by seqNum.
+function levels() {
+  const by = { BUY: new Map(), SELL: new Map() };
+  for (const o of model.orders.values()) {
+    const t = T(o.price), m = by[o.side];
+    if (!m.has(t)) m.set(t, { t, price: o.price, side: o.side, orders: [], totalQty: 0 });
+    const l = m.get(t);
+    l.orders.push(o);
+    l.totalQty += o.qty;
   }
+  const sorted = (m, dir) => [...m.values()].sort((a, b) => dir * (a.t - b.t)).map(l => (l.orders.sort((x, y) => x.seqNum - y.seqNum), l));
+  return { bids: sorted(by.BUY, -1), asks: sorted(by.SELL, 1) };
+}
+
+// ---- tables: rows keyed by order id / trade number, updated in place ------------------------------------------------
+const orderRows = new Map();
+function renderOrders(book) {
+  const rows = [];
+  for (const level of [...book.bids, ...book.asks]) level.orders.forEach((o, i) => rows.push({ ...o, pos: i + 1 }));
   rows.sort((x, y) => (y.mine - x.mine));
-  if (!rows.length) { $("orders").innerHTML = '<div class="empty">No resting orders</div>'; return; }
-  const cls = s => s === "BUY" ? "bid" : "ask";
-  $("orders").innerHTML = `<table><thead><tr><th>Who</th><th>Side</th><th>ID</th><th>Price</th><th>Qty</th><th>Queue</th><th></th></tr></thead><tbody>` +
-    rows.map(r => `<tr data-id="${r.id}" class="${r.id === highlightId ? "hl" : ""} ${r.mine ? "mine" : ""}"><td>${who(r.participant)}</td><td class="${cls(r.side)}">${r.side}</td><td>#${r.id}</td><td>${px(r.price)}</td><td>${r.qty}</td><td>${r.pos}</td>` +
-      `<td>${r.mine ? `<button class="small" data-cancel="${r.id}">Cancel</button>` : ""}</td></tr>`).join("") + "</tbody></table>";
+  const box = $("orders");
+  if (!rows.length) { orderRows.clear(); box.innerHTML = '<div class="empty">No resting orders</div>'; return; }
+  let tbody = box.querySelector("tbody");
+  if (!tbody) {
+    box.innerHTML = "<table><thead><tr><th>Who</th><th>Side</th><th>ID</th><th>Price</th><th>Qty</th><th>Queue</th><th></th></tr></thead><tbody></tbody></table>";
+    tbody = box.querySelector("tbody");
+    orderRows.clear();
+  }
+  const seen = new Set();
+  rows.forEach((r, i) => {
+    seen.add(r.id);
+    let tr = orderRows.get(r.id);
+    const fresh = !tr;
+    if (fresh) { tr = document.createElement("tr"); tr.dataset.id = r.id; tr.classList.add("new"); orderRows.set(r.id, tr); }
+    const sig = `${r.price}|${r.qty}|${r.pos}`;
+    if (tr._sig !== sig) {
+      const cls = r.side === "BUY" ? "bid" : "ask";
+      tr.innerHTML = `<td>${who(r.participant)}</td><td class="${cls}">${r.side}</td><td>#${r.id}</td><td>${px(r.price)}</td><td>${r.qty}</td><td>${r.pos}</td>` +
+        `<td>${r.mine ? `<button class="small" data-cancel="${r.id}">Cancel</button>` : ""}</td>`;
+      if (!fresh && tr._qty !== r.qty) flash(tr, r.qty > tr._qty);
+      tr._sig = sig; tr._qty = r.qty;
+    }
+    tr.classList.toggle("mine", r.mine);
+    tr.classList.toggle("hl", r.id === highlightId);
+    if (tbody.children[i] !== tr) tbody.insertBefore(tr, tbody.children[i] || null);
+  });
+  for (const [id, tr] of orderRows) if (!seen.has(id)) { tr.remove(); orderRows.delete(id); }
 }
 
-function renderTrades(b) {
-  if (!b.trades.length) { $("trades").innerHTML = '<div class="empty">No trades yet</div>'; return; }
-  $("trades").innerHTML = "<table><thead><tr><th>Price</th><th>Qty</th><th>Maker</th><th>Taker</th></tr></thead><tbody>" +
-    b.trades.map(t => `<tr class="${t.makerParticipant === "YOU" || t.takerParticipant === "YOU" ? "mine" : ""}"><td class="${t.takerSide === "BUY" ? "bid" : t.takerSide === "SELL" ? "ask" : ""}">${px(t.price)}</td><td>${t.qty}</td>` +
-      `<td>${who(t.makerParticipant)} #${t.makerOrderId}</td><td>${who(t.takerParticipant)} #${t.takerOrderId}</td></tr>`).join("") + "</tbody></table>";
+let tradeTop = 0;
+function renderTrades() {
+  const box = $("trades");
+  if (!model.trades.length) { box.innerHTML = '<div class="empty">No trades yet</div>'; tradeTop = 0; return; }
+  let tbody = box.querySelector("tbody");
+  if (!tbody || tradesReset) {
+    box.innerHTML = "<table><thead><tr><th>Price</th><th>Qty</th><th>Maker</th><th>Taker</th></tr></thead><tbody></tbody></table>";
+    tbody = box.querySelector("tbody");
+    tradeTop = 0;
+  }
+  const fresh = model.trades.filter(t => t.n > tradeTop);
+  for (let i = fresh.length - 1; i >= 0; i--) {
+    const t = fresh[i], tr = document.createElement("tr");
+    if (!tradesReset) tr.className = "new";
+    if (t.makerParticipant === "YOU" || t.takerParticipant === "YOU") tr.classList.add("mine");
+    tr.innerHTML = `<td class="${t.takerSide === "BUY" ? "bid" : t.takerSide === "SELL" ? "ask" : ""}">${px(t.price)}</td><td>${t.qty}</td>` +
+      `<td>${who(t.makerParticipant)} #${t.makerOrderId}</td><td>${who(t.takerParticipant)} #${t.takerOrderId}</td>`;
+    tbody.prepend(tr);
+  }
+  if (fresh.length) tradeTop = fresh[0].n;
+  while (tbody.childElementCount > MAX_TRADES) tbody.lastChild.remove();
+  tradesReset = false;
 }
 
+// ---- depth chart: persistent bar per order; view window and scales eased ---------------------------------------------
 function el(name, attrs, text) {
   const node = document.createElementNS(SVG_NS, name);
   for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
   if (text !== undefined) node.textContent = text;
   return node;
 }
+function attrs(node, a) { for (const k in a) node.setAttribute(k, a[k]); }
 
 function niceMax(v) {
   if (v <= 0) return 1;
@@ -341,95 +514,148 @@ function niceMax(v) {
   return 10 * p;
 }
 
-function renderChart(b) {
-  const svg = $("chart");
-  svg.replaceChildren();
-  const W = svg.clientWidth || 800, H = svg.clientHeight || 400;
-  const m = { l: 50, r: 56, t: 16, b: 34 };
-  const pw = W - m.l - m.r, ph = H - m.t - m.b;
-  let levels = [...b.bids.map(l => ({ ...l, side: "BUY", t: T(l.price) })), ...b.asks.map(l => ({ ...l, side: "SELL", t: T(l.price) }))];
-  const lastT = b.lastTradePrice !== null ? T(b.lastTradePrice) : null;
+const view = { lo: null, hi: null, yMax: 1, cMax: 1 };
+let target = null;
+const bars = new Map();
+let gAxes = null, gBars = null, gOver = null, emptyMsg = null;
 
-  if (!levels.length) {
-    svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "#7d8b99" }, "Book is empty — press “Simulate” or place an order."));
-    return;
-  }
-
-  const ticks = levels.map(l => l.t);
+function chartTargets(book) {
+  const all = [...book.bids, ...book.asks];
+  const s = model.stats;
+  const lastT = s.lastTradePrice !== null ? T(s.lastTradePrice) : null;
+  if (!all.length) return { empty: true, book, lastT };
+  const ticks = all.map(l => l.t);
   if (lastT !== null) ticks.push(lastT);
-  // Keep the view centred on the inside market so one far-away order doesn't squash the chart.
-  const center = b.bestBid !== null && b.bestAsk !== null ? Math.round((T(b.bestBid) + T(b.bestAsk)) / 2)
-    : lastT ?? Math.round((Math.min(...ticks) + Math.max(...ticks)) / 2);
-  const minP = Math.max(Math.min(...ticks), center - CHART_HALF_WIDTH) - 1;
-  const maxP = Math.min(Math.max(...ticks), center + CHART_HALF_WIDTH) + 1;
-  const hidden = levels.filter(l => l.t < minP || l.t > maxP).length;
-  levels = levels.filter(l => l.t >= minP && l.t <= maxP);
-  const n = maxP - minP + 1;
-  const step = pw / n;
-  const barW = Math.max(1, Math.min(step * 0.78, 60));
-  const xc = p => m.l + (p - minP + 0.5) * step;
+  const center = s.bestBid !== null && s.bestAsk !== null ? (T(s.bestBid) + T(s.bestAsk)) / 2
+    : lastT ?? (Math.min(...ticks) + Math.max(...ticks)) / 2;
+  const lo = Math.max(Math.min(...ticks), center - CHART_HALF_WIDTH) - 1;
+  const hi = Math.min(Math.max(...ticks), center + CHART_HALF_WIDTH) + 1;
+  const visible = all.filter(l => l.t >= lo && l.t <= hi);
+  const cum = ls => { let c = 0; return ls.map(l => ({ t: l.t, cum: (c += l.totalQty) })); };
+  const bidCum = cum(book.bids), askCum = cum(book.asks);
+  const maxCum = Math.max(bidCum.length ? bidCum.at(-1).cum : 0, askCum.length ? askCum.at(-1).cum : 0);
+  return {
+    empty: false, book, lastT, lo, hi, visible, bidCum, askCum, hidden: all.length - visible.length,
+    yMax: niceMax(Math.max(...visible.map(l => l.totalQty), 1) * 1.1), cMax: niceMax(maxCum * 1.1)
+  };
+}
 
-  if (hidden) svg.append(el("text", { x: m.l + pw, y: H - 2, "text-anchor": "end", fill: "#7d8b99", "font-size": 11 }, `${hidden} level${hidden > 1 ? "s" : ""} outside view`));
-  const yMax = niceMax(Math.max(...levels.map(l => l.totalQty)) * 1.1);
-  const y = q => m.t + ph - (q / yMax) * ph;
-
-  let cumBid = 0, cumAsk = 0;
-  const bidCum = b.bids.map(l => ({ t: T(l.price), cum: (cumBid += l.totalQty) })).filter(pt => pt.t >= minP);
-  const askCum = b.asks.map(l => ({ t: T(l.price), cum: (cumAsk += l.totalQty) })).filter(pt => pt.t <= maxP);
-  const cMax = niceMax(Math.max(cumBid, cumAsk) * 1.1);
-  const yc = q => m.t + ph - (q / cMax) * ph;
-
-  for (let i = 0; i <= 4; i++) {
-    const v = yMax * i / 4, yy = y(v);
-    svg.append(el("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: "#26313d" }));
-    svg.append(el("text", { x: m.l - 8, y: yy + 4, "text-anchor": "end", fill: "#7d8b99", "font-size": 11 }, +v.toFixed(1)));
-    svg.append(el("text", { x: m.l + pw + 8, y: yy + 4, fill: "rgba(96,165,250,.8)", "font-size": 11 }, +(cMax * i / 4).toFixed(1)));
-  }
-  svg.append(el("text", { x: 12, y: m.t + ph / 2, fill: "#7d8b99", "font-size": 11, transform: `rotate(-90 12 ${m.t + ph / 2})`, "text-anchor": "middle" }, "qty at level"));
-
-  if (b.bestBid !== null && b.bestAsk !== null) {
-    const bb = T(b.bestBid), ba = T(b.bestAsk);
-    const x1 = xc(bb) + step / 2, x2 = xc(ba) - step / 2;
-    if (x2 > x1) svg.append(el("rect", { x: x1, y: m.t, width: x2 - x1, height: ph, fill: "rgba(96,165,250,.06)" }));
-    svg.append(el("text", { x: (xc(bb) + xc(ba)) / 2, y: m.t + 12, "text-anchor": "middle", fill: "#60a5fa", "font-size": 11 }, `spread ${px(b.spread)}`));
-  }
-
-  const labelEvery = Math.max(1, Math.ceil(n / Math.max(1, pw / 48)));
-  for (let p = minP; p <= maxP; p++) {
-    if ((p - minP) % labelEvery !== 0) continue;
-    svg.append(el("line", { x1: xc(p), x2: xc(p), y1: m.t + ph, y2: m.t + ph + 4, stroke: "#4b5563" }));
-    svg.append(el("text", { x: xc(p), y: m.t + ph + 17, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, fmt(p)));
-  }
-  svg.append(el("text", { x: m.l + pw / 2, y: H - 2, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, "price"));
-  svg.append(el("line", { x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph, stroke: "#4b5563" }));
-
-  if (lastT !== null && lastT >= minP && lastT <= maxP) {
-    svg.append(el("line", { x1: xc(lastT), x2: xc(lastT), y1: m.t, y2: m.t + ph, stroke: "#fde68a", "stroke-dasharray": "2 3", "pointer-events": "none" }));
-    svg.append(el("text", { x: xc(lastT) + 4, y: m.t + 26, fill: "#fde68a", "font-size": 11 }, `last ${px(b.lastTradePrice)}`));
-  }
-
-  for (const level of levels) {
-    const isBid = level.side === "BUY";
+function setChartData(book) {
+  target = chartTargets(book);
+  const seen = new Set();
+  for (const level of [...book.bids, ...book.asks]) {
     let base = 0;
     level.orders.forEach((o, i) => {
-      const top = base + o.qty;
-      const hl = o.id === highlightId;
-      const rect = el("rect", {
-        class: "order", x: xc(level.t) - barW / 2, y: y(top), width: barW, height: Math.max(1, y(base) - y(top)),
-        fill: isBid ? (i % 2 ? "#16a34a" : "#22c55e") : (i % 2 ? "#dc2626" : "#ef4444"),
-        stroke: hl ? "#fff" : o.mine ? "#facc15" : "#171e26", "stroke-width": hl || o.mine ? 2 : 1,
+      seen.add(o.id);
+      let b = bars.get(o.id);
+      if (!b) {
+        b = { node: el("rect", { class: "order" }), t: level.t, base, top: base + o.qty, op: 0 };
+        bars.set(o.id, b);
+        gBars.append(b.node);
+      }
+      Object.assign(b, { tt: level.t, tbase: base, ttop: base + o.qty, top0: b.top, gone: false, o, level, i });
+      base += o.qty;
+      attrs(b.node, {
+        fill: level.side === "BUY" ? (i % 2 ? "#16a34a" : "#22c55e") : (i % 2 ? "#dc2626" : "#ef4444"),
+        stroke: o.id === highlightId ? "#fff" : o.mine ? "#facc15" : "#171e26", "stroke-width": o.id === highlightId || o.mine ? 2 : 1,
         "data-id": o.id, "data-side": level.side, "data-price": level.price, "data-qty": o.qty, "data-pos": i + 1,
         "data-count": level.orders.length, "data-total": level.totalQty, "data-seq": o.seqNum,
         "data-who": o.participant, "data-mine": o.mine
       });
-      svg.append(rect);
-      base = top;
     });
-    if (barW >= 16) {
-      svg.append(el("text", { x: xc(level.t), y: y(level.totalQty) - 4, "text-anchor": "middle", fill: isBid ? "#86efac" : "#fca5a5", "font-size": 10 }, level.totalQty));
+  }
+  for (const [id, b] of bars) {
+    if (!seen.has(id) && !b.gone) { b.gone = true; b.tbase = b.base; b.ttop = b.base; b.node.removeAttribute("data-id"); }
+  }
+  if (!target.empty && view.lo === null) Object.assign(view, { lo: target.lo, hi: target.hi, yMax: target.yMax, cMax: target.cMax });
+}
+
+function drawChart(dt) {
+  const svg = $("chart");
+  if (!gAxes) { gAxes = el("g", {}); gBars = el("g", {}); gOver = el("g", { "pointer-events": "none" }); svg.append(gAxes, gBars, gOver); }
+  if (!target) return false;
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 400;
+  const m = { l: 50, r: 56, t: 16, b: 34 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+
+  if (target.empty) {
+    if (!emptyMsg) {
+      gAxes.replaceChildren(); gOver.replaceChildren();
+      for (const b of bars.values()) b.node.remove();
+      bars.clear();
+      view.lo = null;
+      emptyMsg = el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "#7d8b99" }, "Book is empty — press “Simulate” or place an order.");
+      gAxes.append(emptyMsg);
     }
+    return false;
+  }
+  if (emptyMsg) { emptyMsg.remove(); emptyMsg = null; }
+
+  let moving = false;
+  const go = (key, tau) => {
+    view[key] = ease(view[key], target[key], dt, tau);
+    if (near(view[key], target[key], 0.01)) view[key] = target[key]; else moving = true;
+  };
+  go("lo", 250); go("hi", 250);
+  go("yMax", target.yMax > view.yMax ? 80 : 700);
+  go("cMax", target.cMax > view.cMax ? 80 : 700);
+
+  const { lo, hi, yMax, cMax } = view;
+  const step = pw / (hi - lo + 1);
+  const barW = Math.max(1, Math.min(step * 0.78, 60));
+  const xc = p => m.l + (p - lo + 0.5) * step;
+  const y = q => m.t + ph - (q / yMax) * ph;
+  const yc = q => m.t + ph - (q / cMax) * ph;
+  const s = model.stats;
+
+  for (const [id, b] of bars) {
+    b.t = ease(b.t, b.tt, dt, 140); b.base = ease(b.base, b.tbase, dt, 140); b.top = ease(b.top, b.ttop, dt, 140);
+    b.op = ease(b.op, b.gone ? 0 : 1, dt, b.gone ? 120 : 160);
+    const settled = near(b.t, b.tt, 0.01) && near(b.base, b.tbase, 0.01) && near(b.top, b.ttop, 0.01) && near(b.op, b.gone ? 0 : 1, 0.01);
+    if (settled) { b.t = b.tt; b.base = b.tbase; b.top = b.ttop; b.op = b.gone ? 0 : 1; } else moving = true;
+    if (b.gone && b.op === 0) { b.node.remove(); bars.delete(id); continue; }
+    const inView = b.t >= lo - 0.5 && b.t <= hi + 0.5;
+    attrs(b.node, {
+      x: xc(b.t) - barW / 2, y: y(b.top), width: barW, height: Math.max(b.gone ? 0 : 1, y(b.base) - y(b.top)),
+      opacity: inView ? b.op.toFixed(3) : 0
+    });
   }
 
+  // Axes, labels and depth curves are cheap; redraw them each animated frame.
+  gAxes.replaceChildren(); gOver.replaceChildren();
+  for (let i = 0; i <= 4; i++) {
+    const v = yMax * i / 4, yy = y(v);
+    gAxes.append(el("line", { x1: m.l, x2: m.l + pw, y1: yy, y2: yy, stroke: "#26313d" }));
+    gAxes.append(el("text", { x: m.l - 8, y: yy + 4, "text-anchor": "end", fill: "#7d8b99", "font-size": 11 }, +v.toFixed(1)));
+    gAxes.append(el("text", { x: m.l + pw + 8, y: yy + 4, fill: "rgba(96,165,250,.8)", "font-size": 11 }, +(cMax * i / 4).toFixed(1)));
+  }
+  gAxes.append(el("text", { x: 12, y: m.t + ph / 2, fill: "#7d8b99", "font-size": 11, transform: `rotate(-90 12 ${m.t + ph / 2})`, "text-anchor": "middle" }, "qty at level"));
+  if (s.bestBid !== null && s.bestAsk !== null) {
+    const bb = T(s.bestBid), ba = T(s.bestAsk);
+    const x1 = xc(bb) + step / 2, x2 = xc(ba) - step / 2;
+    if (x2 > x1) gAxes.append(el("rect", { x: x1, y: m.t, width: x2 - x1, height: ph, fill: "rgba(96,165,250,.06)" }));
+    gOver.append(el("text", { x: (xc(bb) + xc(ba)) / 2, y: m.t + 12, "text-anchor": "middle", fill: "#60a5fa", "font-size": 11 }, `spread ${px(s.spread)}`));
+  }
+  const labelEvery = Math.max(1, Math.ceil((hi - lo + 1) / Math.max(1, pw / 48)));
+  for (let p = Math.ceil(lo); p <= Math.floor(hi); p++) {
+    if (p % labelEvery !== 0) continue;
+    gAxes.append(el("line", { x1: xc(p), x2: xc(p), y1: m.t + ph, y2: m.t + ph + 4, stroke: "#4b5563" }));
+    gAxes.append(el("text", { x: xc(p), y: m.t + ph + 17, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, fmt(p)));
+  }
+  gAxes.append(el("text", { x: m.l + pw / 2, y: H - 2, "text-anchor": "middle", fill: "#7d8b99", "font-size": 11 }, "price"));
+  gAxes.append(el("line", { x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph, stroke: "#4b5563" }));
+  if (target.hidden) gAxes.append(el("text", { x: m.l + pw, y: H - 2, "text-anchor": "end", fill: "#7d8b99", "font-size": 11 }, `${target.hidden} level${target.hidden > 1 ? "s" : ""} outside view`));
+
+  const lastT = target.lastT;
+  if (lastT !== null && lastT >= lo && lastT <= hi) {
+    gOver.append(el("line", { x1: xc(lastT), x2: xc(lastT), y1: m.t, y2: m.t + ph, stroke: "#fde68a", "stroke-dasharray": "2 3" }));
+    gOver.append(el("text", { x: xc(lastT) + 4, y: m.t + 26, fill: "#fde68a", "font-size": 11 }, `last ${px(s.lastTradePrice)}`));
+  }
+  if (barW >= 16) {
+    for (const level of target.visible) {
+      gOver.append(el("text", { x: xc(level.t), y: y(level.totalQty) - 4, "text-anchor": "middle", fill: level.side === "BUY" ? "#86efac" : "#fca5a5", "font-size": 10 }, level.totalQty));
+    }
+  }
   const stepPath = (pts, dir) => {
     let d = `M ${xc(pts[0].t) - dir * step / 2} ${yc(0)} L ${xc(pts[0].t) - dir * step / 2} ${yc(pts[0].cum)}`;
     pts.forEach((pt, i) => {
@@ -439,9 +665,31 @@ function renderChart(b) {
     });
     return d;
   };
-  for (const [pts, dir, color] of [[bidCum, -1, "rgba(34,197,94,.55)"], [askCum, 1, "rgba(239,68,68,.55)"]]) {
-    if (pts.length) svg.append(el("path", { d: stepPath(pts, dir), fill: "none", stroke: color, "stroke-width": 1.5, "stroke-dasharray": "5 3", "pointer-events": "none" }));
+  const clipX = d => d;
+  for (const [pts, dir, color] of [[target.bidCum.filter(p => p.t >= lo), -1, "rgba(34,197,94,.55)"], [target.askCum.filter(p => p.t <= hi), 1, "rgba(239,68,68,.55)"]]) {
+    if (pts.length) gOver.append(el("path", { d: clipX(stepPath(pts, dir)), fill: "none", stroke: color, "stroke-width": 1.5, "stroke-dasharray": "5 3" }));
   }
+  return moving;
+}
+
+// One loop: fold the latest data in at most once per frame, then ease everything toward it.
+let lastFrame = performance.now(), chartMoving = false, forceChart = true;
+function frame(now) {
+  const dt = Math.min(100, now - lastFrame);
+  lastFrame = now;
+  if (dataDirty && model.stats) {
+    dataDirty = false;
+    const book = levels();
+    renderNumbers();
+    renderSim(model.simulation);
+    renderOrders(book);
+    renderTrades();
+    setChartData(book);
+    chartMoving = true;
+  }
+  stepTweens(dt);
+  if (chartMoving || forceChart) { chartMoving = drawChart(dt); forceChart = false; }
+  requestAnimationFrame(frame);
 }
 
 function setSide(s) {
@@ -461,7 +709,7 @@ function setType() {
 function setHighlight(id) {
   if (highlightId === id) return;
   highlightId = id;
-  if (book) { renderOrders(book); renderChart(book); }
+  dataDirty = true;
 }
 
 document.querySelectorAll(".side-toggle button").forEach(b => b.addEventListener("click", () => setSide(b.dataset.side)));
@@ -514,17 +762,13 @@ $("sim-start").addEventListener("click", () => command(() => api("POST", "/simul
 $("sim-stop").addEventListener("click", () => command(() => api("POST", "/simulate/stop", {})));
 $("rate").addEventListener("input", () => { $("rate-label").textContent = $("rate").value + " /sec"; });
 $("rate").addEventListener("change", () => command(() => api("POST", "/simulate/rate?perSec=" + $("rate").value, {})));
+$("reset").addEventListener("click", () => command(() => api("POST", "/api/reset", {})));
 
-$("reset").addEventListener("click", async () => {
-  await command(() => api("POST", "/api/reset", {}));
-  $("log").replaceChildren();
-  logLine("", "RESET    engine cleared, new account");
-});
-
-window.addEventListener("resize", () => book && renderChart(book));
+window.addEventListener("resize", () => { forceChart = true; });
 setType();
-poll();
-setInterval(poll, 500);
+connect();
+startPolling();
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>

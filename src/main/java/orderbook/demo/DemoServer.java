@@ -2,11 +2,12 @@ package orderbook.demo;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -16,10 +17,19 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Random;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.io.Content;
+import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.server.WebSocketUpgradeHandler;
 
 import orderbook.Command;
 import orderbook.Event;
@@ -35,9 +45,12 @@ import orderbook.sim.Simulator;
  * Local HTTP demo for poking at the matching engine from a browser, with a market simulation running against it.
  * Not part of the engine itself.
  *
+ * <p>Runs on embedded Jetty: REST endpoints for commands and polling, plus a WebSocket at {@code /ws} that pushes
+ * sequenced deltas (see {@link BookStream}).
+ *
  * <p>Threading: the engine lives inside the {@link Simulator}, and everything that touches it (simulated flow, user
- * commands, building the JSON state) runs on the simulator's single thread. HTTP requests are dispatched on the JDK
- * server's default single thread and hop onto the simulator thread via {@link Simulator#execute}.
+ * commands, building the JSON state and stream frames) runs on the simulator's single thread. Jetty request threads
+ * hop onto it via {@link Simulator#execute}.
  *
  * <p>Orders from the HTTP API always belong to the user ({@code "YOU"}) and pass through the {@link Account} checks
  * before reaching the engine. Prices and cash are decimals in the API (tick = 0.01) and integer ticks inside.
@@ -49,12 +62,16 @@ public final class DemoServer {
     private static final int MAX_FEED_PER_RESPONSE = 200;
     private static final int DEPTH_LEVELS = 30;
     static final long USER = Simulator.USER_PARTICIPANT_ID;
+    private static final long STREAM_FLUSH_MILLIS = 50;
+    private static final Duration WS_IDLE_TIMEOUT = Duration.ofSeconds(60);
 
     private record FeedEntry(long seq, String json) {
     }
 
-    private final HttpServer server;
+    private final Server server;
+    private final ServerConnector connector;
     private final Simulator simulator;
+    private final BookStream stream;
     private final Supplier<Account> accountFactory;
 
     // Confined to the simulator thread.
@@ -77,14 +94,20 @@ public final class DemoServer {
         this.accountFactory = accountFactory != null ? accountFactory
                 : () -> Account.withRandomCash(USER, accountRandom, simulator.startingReferenceTicks());
         simulator.run(() -> account = this.accountFactory.get());
+        stream = new BookStream(simulator, new StreamSource(), STREAM_FLUSH_MILLIS);
         simulator.addListener(this::onCommand);
-        server = HttpServer.create(address, 0);
-        server.createContext("/", this::handleStatic);
-        server.createContext("/api/book", ex -> handle(ex, this::book));
-        server.createContext("/api/orders", ex -> handle(ex, this::orders));
-        server.createContext("/api/reset", ex -> handle(ex, this::reset));
-        server.createContext("/simulate", ex -> handle(ex, this::simulate));
-        server.setExecutor(null);
+
+        server = new Server();
+        connector = new ServerConnector(server);
+        connector.setHost(address.getAddress() != null ? address.getAddress().getHostAddress() : address.getHostString());
+        connector.setPort(address.getPort());
+        server.addConnector(connector);
+        WebSocketUpgradeHandler ws = WebSocketUpgradeHandler.from(server, container -> {
+            container.setIdleTimeout(WS_IDLE_TIMEOUT);
+            container.addMapping("/ws", (req, res, cb) -> new StreamSocket(sinceParam(req.getHttpURI().getQuery())));
+        });
+        ws.setHandler(new Routes());
+        server.setHandler(ws);
     }
 
     public static void main(String[] args) throws IOException {
@@ -101,67 +124,224 @@ public final class DemoServer {
         return text != null && !text.isBlank() ? Long.parseLong(text.trim()) : new SecureRandom().nextLong();
     }
 
-    public void start() {
-        server.start();
+    public void start() throws IOException {
+        try {
+            server.start();
+        } catch (Exception e) {
+            throw new IOException("failed to start server", e);
+        }
+        stream.start();
     }
 
-    /** Stops the HTTP server and shuts down the simulator. */
+    /** Closes stream clients, stops the HTTP server and shuts down the simulator. */
     public void stop() {
-        server.stop(0);
-        simulator.close();
+        stream.close();
+        try {
+            server.stop();
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to stop server", e);
+        } finally {
+            simulator.close();
+        }
     }
 
     public int port() {
-        return server.getAddress().getPort();
+        return connector.getLocalPort();
     }
 
     Simulator simulator() {
         return simulator;
     }
 
-    private record Response(int status, String json) {
-        static Response ok(String json) {
-            return new Response(200, json);
+    private record Reply(int status, String json) {
+        static Reply ok(String json) {
+            return new Reply(200, json);
         }
 
-        static Response error(int status, String message) {
-            return new Response(status, "{\"error\":" + Json.str(message) + "}");
+        static Reply error(int status, String message) {
+            return new Reply(status, "{\"error\":" + Json.str(message) + "}");
+        }
+    }
+
+    /** One HTTP request; {@code query} is still URL-encoded. */
+    private record Call(String method, String path, String query, Request request) {
+        String body() throws IOException {
+            return Content.Source.asString(request, StandardCharsets.UTF_8);
         }
     }
 
     @FunctionalInterface
-    private interface Handler {
-        Response handle(HttpExchange exchange) throws IOException;
+    private interface Endpoint {
+        Reply handle(Call call) throws IOException;
     }
 
-    private void handle(HttpExchange exchange, Handler handler) throws IOException {
-        Response response;
-        try {
-            response = handler.handle(exchange);
-        } catch (IllegalArgumentException e) {
-            response = Response.error(400, e.getMessage());
-        } catch (RuntimeException e) {
-            response = Response.error(500, String.valueOf(e.getMessage()));
+    private Endpoint route(String path) {
+        if (under(path, "/api/book")) {
+            return this::book;
         }
-        send(exchange, response.status(), "application/json", response.json().getBytes(StandardCharsets.UTF_8));
+        if (under(path, "/api/orders")) {
+            return this::orders;
+        }
+        if (under(path, "/api/reset")) {
+            return this::reset;
+        }
+        if (under(path, "/simulate")) {
+            return this::simulate;
+        }
+        return null;
+    }
+
+    private static boolean under(String path, String prefix) {
+        return path.equals(prefix) || path.startsWith(prefix + "/");
+    }
+
+    private final class Routes extends Handler.Abstract {
+        @Override
+        public boolean handle(Request request, Response response, Callback callback) throws Exception {
+            Call call = new Call(request.getMethod(), request.getHttpURI().getPath(), request.getHttpURI().getQuery(),
+                    request);
+            Endpoint endpoint = route(call.path());
+            if (endpoint == null) {
+                serveStatic(call, response, callback);
+                return true;
+            }
+            Reply reply;
+            try {
+                reply = endpoint.handle(call);
+            } catch (IllegalArgumentException e) {
+                reply = Reply.error(400, e.getMessage());
+            } catch (RuntimeException e) {
+                reply = Reply.error(500, String.valueOf(e.getMessage()));
+            }
+            send(response, callback, reply.status(), "application/json", reply.json().getBytes(StandardCharsets.UTF_8));
+            return true;
+        }
+    }
+
+    // ---- WebSocket stream -----------------------------------------------------------------------------------------
+
+    private static OptionalLong sinceParam(String query) {
+        String text = parseForm(query).get("since");
+        if (text == null || text.isBlank()) {
+            return OptionalLong.empty();
+        }
+        try {
+            return OptionalLong.of(Long.parseLong(text.trim()));
+        } catch (NumberFormatException e) {
+            return OptionalLong.empty();
+        }
+    }
+
+    /** One browser connection; inbound text (keep-alive pings) is ignored. Public because Jetty invokes it reflectively. */
+    public final class StreamSocket implements Session.Listener.AutoDemanding {
+        private final OptionalLong since;
+        private volatile Outbox outbox;
+
+        StreamSocket(OptionalLong since) {
+            this.since = since;
+        }
+
+        @Override
+        public void onWebSocketOpen(Session session) {
+            outbox = stream.connect(new Outbox.Transport() {
+                @Override
+                public void send(String text, Runnable onSuccess, Consumer<Throwable> onFailure) {
+                    session.sendText(text, org.eclipse.jetty.websocket.api.Callback.from(onSuccess, onFailure));
+                }
+
+                @Override
+                public void close() {
+                    session.close();
+                }
+            }, since);
+        }
+
+        @Override
+        public void onWebSocketClose(int statusCode, String reason,
+                org.eclipse.jetty.websocket.api.Callback callback) {
+            disconnect();
+            callback.succeed();
+        }
+
+        @Override
+        public void onWebSocketError(Throwable cause) {
+            disconnect();
+        }
+
+        private void disconnect() {
+            Outbox out = outbox;
+            if (out != null) {
+                stream.disconnect(out);
+            }
+        }
+    }
+
+    /** Stream views of the server state; simulator thread only. */
+    private final class StreamSource implements BookStream.Source {
+        @Override
+        public String order(long orderId) {
+            return simulator.engine().book().find(orderId).map(DemoServer.this::orderJson).orElse(null);
+        }
+
+        @Override
+        public List<String> restingOrders() {
+            OrderBook book = simulator.engine().book();
+            List<String> out = new ArrayList<>();
+            for (Side side : Side.values()) {
+                for (Order o : book.orders(side)) {
+                    out.add(orderJson(o));
+                }
+            }
+            return out;
+        }
+
+        @Override
+        public String trades() {
+            return Json.array(new ArrayList<>(trades));
+        }
+
+        @Override
+        public String feedSince(long since) {
+            return DemoServer.this.feedSince(since);
+        }
+
+        @Override
+        public long feedSeq() {
+            return feedSeq;
+        }
+
+        @Override
+        public String stats() {
+            return statsJson();
+        }
+
+        @Override
+        public String account() {
+            return accountJson();
+        }
+
+        @Override
+        public String simulation() {
+            return simulationJson();
+        }
     }
 
     // ---- handlers -------------------------------------------------------------------------------------------------
 
-    private Response book(HttpExchange exchange) {
-        if (!exchange.getRequestMethod().equals("GET")) {
-            return Response.error(405, "use GET");
+    private Reply book(Call call) {
+        if (!call.method().equals("GET")) {
+            return Reply.error(405, "use GET");
         }
-        String sinceText = parseForm(exchange.getRequestURI().getRawQuery()).get("since");
+        String sinceText = parseForm(call.query()).get("since");
         long since = sinceText == null || sinceText.isBlank() ? 0 : parseLong("since", sinceText);
-        return Response.ok(simulator.execute(() -> stateJson(since)));
+        return Reply.ok(simulator.execute(() -> stateJson(since)));
     }
 
-    private Response orders(HttpExchange exchange) throws IOException {
-        String method = exchange.getRequestMethod();
-        String path = exchange.getRequestURI().getPath();
+    private Reply orders(Call call) throws IOException {
+        String method = call.method();
+        String path = call.path();
         if (method.equals("POST") && path.equals("/api/orders")) {
-            return place(parseForm(body(exchange)));
+            return place(parseForm(call.body()));
         }
         if (path.startsWith("/api/orders/")) {
             long id = parseLong("id", path.substring("/api/orders/".length()));
@@ -169,13 +349,13 @@ public final class DemoServer {
                 return simulator.execute(() -> submitUser(new Command.Cancel(id)));
             }
             if (method.equals("PATCH")) {
-                return amend(id, parseForm(body(exchange)));
+                return amend(id, parseForm(call.body()));
             }
         }
-        return Response.error(405, "use POST /api/orders, PATCH /api/orders/{id} or DELETE /api/orders/{id}");
+        return Reply.error(405, "use POST /api/orders, PATCH /api/orders/{id} or DELETE /api/orders/{id}");
     }
 
-    private Response place(Map<String, String> form) {
+    private Reply place(Map<String, String> form) {
         String participant = form.getOrDefault("participantId", Simulator.USER_LABEL).trim();
         if (!participant.isEmpty() && !participant.equals(Simulator.USER_LABEL)) {
             throw new IllegalArgumentException("participantId must be " + Simulator.USER_LABEL);
@@ -196,7 +376,7 @@ public final class DemoServer {
         });
     }
 
-    private Response amend(long id, Map<String, String> form) {
+    private Reply amend(long id, Map<String, String> form) {
         String priceText = form.getOrDefault("price", "").trim();
         String qtyText = form.getOrDefault("qty", "").trim();
         Long price = priceText.isEmpty() ? null : Ticks.parse("price", priceText);
@@ -208,7 +388,7 @@ public final class DemoServer {
     }
 
     /** Runs on the simulator thread: account check, then the engine. */
-    private Response submitUser(Command command) {
+    private Reply submitUser(Command command) {
         Optional<Account.Rejection> rejection = account.admit(command, simulator.engine().book());
         if (rejection.isPresent()) {
             Account.Rejection r = rejection.get();
@@ -216,41 +396,42 @@ public final class DemoServer {
                     "participant", Json.str(Simulator.USER_LABEL), "reason", Json.str(r.reason().name()),
                     "message", Json.str(r.message()));
             addFeed(json);
-            return Response.ok("{\"events\":[" + json + "],\"book\":" + stateJson(Long.MAX_VALUE) + "}");
+            return Reply.ok("{\"events\":[" + json + "],\"book\":" + stateJson(Long.MAX_VALUE) + "}");
         }
         List<Event> events = simulator.submit(USER, command);
         List<String> eventJson = new ArrayList<>();
         for (Event event : events) {
             eventJson.add(eventJson(event, USER));
         }
-        return Response.ok("{\"events\":" + Json.array(eventJson) + ",\"book\":" + stateJson(Long.MAX_VALUE) + "}");
+        return Reply.ok("{\"events\":" + Json.array(eventJson) + ",\"book\":" + stateJson(Long.MAX_VALUE) + "}");
     }
 
-    private Response reset(HttpExchange exchange) {
-        if (!exchange.getRequestMethod().equals("POST")) {
-            return Response.error(405, "use POST");
+    private Reply reset(Call call) {
+        if (!call.method().equals("POST")) {
+            return Reply.error(405, "use POST");
         }
         simulator.reset();
-        return Response.ok(simulator.execute(() -> {
+        return Reply.ok(simulator.execute(() -> {
             account = accountFactory.get();
             trades.clear();
             tradeCount = 0;
             tradedVolume = 0;
             feed.clear();
+            stream.onReset();
             return stateJson(Long.MAX_VALUE);
         }));
     }
 
-    private Response simulate(HttpExchange exchange) throws IOException {
-        if (!exchange.getRequestMethod().equals("POST")) {
-            return Response.error(405, "use POST");
+    private Reply simulate(Call call) throws IOException {
+        if (!call.method().equals("POST")) {
+            return Reply.error(405, "use POST");
         }
-        switch (exchange.getRequestURI().getPath()) {
+        switch (call.path()) {
             case "/simulate/start" -> simulator.start();
             case "/simulate/stop" -> simulator.stop();
             case "/simulate/rate" -> {
-                Map<String, String> params = parseForm(exchange.getRequestURI().getRawQuery());
-                params.putAll(parseForm(body(exchange)));
+                Map<String, String> params = parseForm(call.query());
+                params.putAll(parseForm(call.body()));
                 String text = params.get("perSec");
                 if (text == null || text.isBlank()) {
                     throw new IllegalArgumentException("perSec is required");
@@ -264,10 +445,10 @@ public final class DemoServer {
                 simulator.setRate(perSec);
             }
             default -> {
-                return Response.error(404, "use /simulate/start, /simulate/stop or /simulate/rate?perSec=N");
+                return Reply.error(404, "use /simulate/start, /simulate/stop or /simulate/rate?perSec=N");
             }
         }
-        return Response.ok(simulator.execute(() -> "{\"simulation\":" + simulationJson() + ",\"book\":"
+        return Reply.ok(simulator.execute(() -> "{\"simulation\":" + simulationJson() + ",\"book\":"
                 + stateJson(Long.MAX_VALUE) + "}"));
     }
 
@@ -278,9 +459,20 @@ public final class DemoServer {
         account.onEvents(events);
         for (Event event : events) {
             if (event instanceof Event.TradeExecuted executed) {
-                trades.addFirst(tradeJson(executed.trade()));
+                Trade t = executed.trade();
                 tradeCount++;
-                tradedVolume += executed.trade().qty();
+                tradedVolume += t.qty();
+                String json = "{\"n\":" + tradeCount + "," + tradeJson(t).substring(1);
+                trades.addFirst(json);
+                stream.onTrade(json);
+                stream.markOrder(t.makerOrderId());
+                stream.markOrder(t.takerOrderId());
+            } else if (event instanceof Event.OrderPlaced e) {
+                stream.markOrder(e.orderId());
+            } else if (event instanceof Event.OrderCancelled e) {
+                stream.markOrder(e.orderId());
+            } else if (event instanceof Event.OrderAmended e) {
+                stream.markOrder(e.orderId());
             }
             addFeed(eventJson(event, participantId));
         }
@@ -334,6 +526,29 @@ public final class DemoServer {
                 "simulation", simulationJson(),
                 "events", feedSince(since),
                 "eventSeq", Long.toString(feedSeq));
+    }
+
+    /** Top-of-book and tape counters, as sent in every stream frame. */
+    private String statsJson() {
+        OrderBook book = simulator.engine().book();
+        OptionalLong bid = book.bestBid();
+        OptionalLong ask = book.bestAsk();
+        return Json.obj(
+                "tickSize", "0.01",
+                "bestBid", price(bid),
+                "bestAsk", price(ask),
+                "spread", bid.isPresent() && ask.isPresent() ? Ticks.format(ask.getAsLong() - bid.getAsLong()) : "null",
+                "lastTradePrice", price(account.lastTradePrice()),
+                "restingOrders", Integer.toString(book.size()),
+                "tradeCount", Long.toString(tradeCount),
+                "tradedVolume", Long.toString(tradedVolume));
+    }
+
+    private String orderJson(Order o) {
+        return Json.obj("id", Long.toString(o.id()), "side", Json.str(o.side().name()), "price", Ticks.format(o.price()),
+                "qty", Long.toString(o.qtyRemaining()), "seqNum", Long.toString(o.seqNum()),
+                "participant", Json.str(simulator.label(o.participantId())),
+                "mine", Boolean.toString(o.participantId() == USER));
     }
 
     private String accountJson() {
@@ -442,10 +657,6 @@ public final class DemoServer {
 
     // ---- HTTP helpers ---------------------------------------------------------------------------------------------
 
-    private static String body(HttpExchange exchange) throws IOException {
-        return new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-    }
-
     private static <E extends Enum<E>> E parseEnum(Class<E> type, String name, String value, E defaultValue) {
         if (value == null || value.isBlank()) {
             if (defaultValue != null) {
@@ -464,28 +675,26 @@ public final class DemoServer {
         }
     }
 
-    private void handleStatic(HttpExchange exchange) throws IOException {
-        String path = exchange.getRequestURI().getPath();
+    private void serveStatic(Call call, Response response, Callback callback) throws IOException {
+        String path = call.path();
         if (!path.equals("/") && !path.equals("/index.html")) {
-            send(exchange, 404, "text/plain", "not found".getBytes(StandardCharsets.UTF_8));
+            send(response, callback, 404, "text/plain", "not found".getBytes(StandardCharsets.UTF_8));
             return;
         }
         try (InputStream in = DemoServer.class.getResourceAsStream("/demo/index.html")) {
             if (in == null) {
-                send(exchange, 500, "text/plain", "index.html missing".getBytes(StandardCharsets.UTF_8));
+                send(response, callback, 500, "text/plain", "index.html missing".getBytes(StandardCharsets.UTF_8));
                 return;
             }
-            send(exchange, 200, "text/html; charset=utf-8", in.readAllBytes());
+            send(response, callback, 200, "text/html; charset=utf-8", in.readAllBytes());
         }
     }
 
-    private static void send(HttpExchange exchange, int status, String contentType, byte[] body) throws IOException {
-        exchange.getResponseHeaders().set("Content-Type", contentType);
-        exchange.getResponseHeaders().set("Cache-Control", "no-store");
-        exchange.sendResponseHeaders(status, body.length);
-        try (OutputStream out = exchange.getResponseBody()) {
-            out.write(body);
-        }
+    private static void send(Response response, Callback callback, int status, String contentType, byte[] body) {
+        response.setStatus(status);
+        response.getHeaders().put(HttpHeader.CONTENT_TYPE, contentType);
+        response.getHeaders().put(HttpHeader.CACHE_CONTROL, "no-store");
+        response.write(true, ByteBuffer.wrap(body), callback);
     }
 
     private static Map<String, String> parseForm(String body) {
@@ -513,47 +722,6 @@ public final class DemoServer {
             return Long.parseLong(value.trim());
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(name + " must be an integer");
-        }
-    }
-
-    /** Minimal JSON writer; values passed to {@link #obj} and {@link #array} are already-encoded JSON. */
-    private static final class Json {
-        static String str(String s) {
-            StringBuilder sb = new StringBuilder("\"");
-            for (char c : s.toCharArray()) {
-                switch (c) {
-                    case '"' -> sb.append("\\\"");
-                    case '\\' -> sb.append("\\\\");
-                    case '\n' -> sb.append("\\n");
-                    default -> {
-                        if (c < 0x20) {
-                            sb.append(String.format("\\u%04x", (int) c));
-                        } else {
-                            sb.append(c);
-                        }
-                    }
-                }
-            }
-            return sb.append('"').toString();
-        }
-
-        static String num(OptionalLong value) {
-            return value.isPresent() ? Long.toString(value.getAsLong()) : "null";
-        }
-
-        static String array(List<String> values) {
-            return "[" + String.join(",", values) + "]";
-        }
-
-        static String obj(String... keyValues) {
-            StringBuilder sb = new StringBuilder("{");
-            for (int i = 0; i < keyValues.length; i += 2) {
-                if (i > 0) {
-                    sb.append(',');
-                }
-                sb.append(str(keyValues[i])).append(':').append(keyValues[i + 1]);
-            }
-            return sb.append('}').toString();
         }
     }
 }
