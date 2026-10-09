@@ -153,11 +153,11 @@
       <label for="rate" style="margin:0">Rate</label>
       <input id="rate" type="range" min="1" max="20" step="1" value="5">
       <span id="rate-label">5 /sec</span>
-      <span id="sim-seed"></span><span id="conn" title="Data transport: live WebSocket stream, or polling while it reconnects">connecting</span>
+      <span id="sim-seed"></span><span id="conn" title="Market data: live SSE stream (/marketdata/stream); account state is polled">connecting</span>
       <button type="button" class="small" id="reset" title="Stop the simulation and start over with an empty engine and a fresh account">Reset</button>
     </div>
     <div class="sim-bar" id="participants"></div>
-    <h2>Book depth — one bar per price level, one segment per resting order (FIFO bottom → top). Your orders are outlined. Click one of yours to cancel it.</h2>
+    <h2>Book depth — one bar per price level, one segment per resting order (FIFO bottom → top). Levels holding YOUR orders are outlined.</h2>
     <div id="chart-wrap">
       <svg id="chart"></svg>
       <div id="tooltip"></div>
@@ -181,7 +181,7 @@
 
 <div class="bottom">
   <section class="panel">
-    <h2>Resting orders</h2>
+    <h2>Your open orders</h2>
     <div class="scroll" id="orders"></div>
   </section>
   <section class="panel">
@@ -208,10 +208,10 @@ const px = v => v === null || v === undefined ? "–" : Number(v).toFixed(2);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const who = p => p === "YOU" ? '<span class="you">YOU</span>' : esc(p ?? "?");
 
-// ---- local model, fed by the /ws stream (or /api/book polling as a fallback) ----------------------------------------
-const model = { orders: new Map(), trades: [], stats: null, account: null, simulation: null };
+// ---- local model: the book is a replica fed by /marketdata/stream (SSE); the account is polled ---------------------
+const model = { bids: new Map(), asks: new Map(), trades: [], lastTradePrice: null, stats: null, account: null,
+  simulation: null, tradeCount: 0, tradedVolume: 0 };
 let dataDirty = false, tradesReset = true;
-let lastFeedSeq = 0, lastTradeN = 0;
 
 // Static (GitHub Pages) build: the engine and simulator run in this page, compiled from Java, behind the same API.
 const embedded = window.orderbook || null;
@@ -263,122 +263,121 @@ function describe(e) {
 
 function logFeed(events) {
   for (const e of events) {
-    if (e.seq <= lastFeedSeq) continue;
     const [text, mine] = describe(e);
     logLine(e.type, text, mine);
-    lastFeedSeq = e.seq;
   }
 }
 
 function clearForReset() {
   $("log").replaceChildren();
-  lastFeedSeq = 0;
   for (const list of Object.values(priceHistory)) list.length = 0;
   pview = null;
   logLine("", "RESET    engine cleared, new account");
 }
 
-function addTrades(newestFirst, record) {
-  for (let i = newestFirst.length - 1; i >= 0; i--) {
-    const t = newestFirst[i];
-    if (t.n <= lastTradeN) continue;
-    lastTradeN = t.n;
+// Stream messages carry integer ticks; the page works in decimal prices.
+const dec = t => t === null || t === undefined ? null : t / 100;
+function tradeOf(e) {
+  return { n: e.n, price: dec(e.price), qty: e.qty, takerSide: e.takerSide, makerOrderId: e.makerOrderId,
+    takerOrderId: e.takerOrderId, makerParticipant: e.maker, takerParticipant: e.taker };
+}
+function eventOf(e) {
+  if (e.type === "TradeExecuted") return { type: e.type, trade: tradeOf(e) };
+  return { ...e, price: dec(e.price), oldPrice: dec(e.oldPrice), newPrice: dec(e.newPrice) };
+}
+
+function addTrades(oldestFirst, record) {
+  for (const e of oldestFirst) {
+    const t = tradeOf(e);
     model.trades.unshift(t);
+    model.lastTradePrice = t.price;
     if (record) recordTrade(t);
   }
   model.trades.length = Math.min(model.trades.length, MAX_TRADES);
 }
 
-function replaceAll(orders, trades, stats, account, simulation) {
-  model.orders = new Map(orders.map(o => [o.id, o]));
-  model.trades = [];
-  lastTradeN = 0;
-  addTrades(trades);
-  tradesReset = true;
-  Object.assign(model, { stats, account, simulation });
-  dataDirty = true;
+function setLevels(map, levels) {
+  map.clear();
+  for (const [t, qty, n] of levels) map.set(t, { qty, n });
 }
 
 function applySnapshot(f) {
   if (f.reason === "reset") clearForReset();
-  replaceAll(f.orders, f.trades, f.stats, f.account, f.simulation);
-  logFeed(f.events);
+  else if (f.reason === "connect") $("log").replaceChildren();
+  setLevels(model.bids, f.bids);
+  setLevels(model.asks, f.asks);
+  model.trades = [];
+  model.lastTradePrice = null;
+  addTrades(f.trades, false);
+  tradesReset = true;
+  if (f.reason !== "resync") logFeed(f.events.map(eventOf));
+  dataDirty = true;
 }
 
+// Level deltas: a = add, u = update, r = remove; [op, "B"|"S", priceTicks, totalQty, orderCount].
 function applyDelta(f) {
-  for (const o of f.orders) model.orders.set(o.id, o);
-  for (const id of f.removed) model.orders.delete(id);
-  addTrades(f.trades, true);
-  Object.assign(model, { stats: f.stats, account: f.account, simulation: f.simulation });
-  logFeed(f.events);
-  dataDirty = true;
-}
-
-// Polling fallback: /api/book carries the same data shaped as price levels.
-function applyBook(b) {
-  const orders = [];
-  for (const [s, levels] of [["BUY", b.bids], ["SELL", b.asks]]) {
-    for (const level of levels) for (const o of level.orders) orders.push({ ...o, side: s, price: level.price });
+  for (const [op, s, t, qty, n] of f.levels) {
+    const map = s === "B" ? model.bids : model.asks;
+    if (op === "r") map.delete(t); else map.set(t, { qty, n });
   }
-  const { bestBid, bestAsk, spread, lastTradePrice, restingOrders, tradeCount, tradedVolume } = b;
-  if (tradeCount < lastTradeN) clearForReset();
-  model.orders = new Map(orders.map(o => [o.id, o]));
-  addTrades(b.trades, lastTradeN > 0);
-  Object.assign(model, { stats: { bestBid, bestAsk, spread, lastTradePrice, restingOrders, tradeCount, tradedVolume },
-    account: b.account, simulation: b.simulation });
-  logFeed(b.events);
+  addTrades(f.events.filter(e => e.type === "TradeExecuted"), true);
+  logFeed(f.events.map(eventOf));
   dataDirty = true;
 }
 
-// ---- transport: WebSocket with resume, polling while it is down ------------------------------------------------------
-let ws = null, streamSeq = 0, retryMs = 250, pollTimer = null, polling = false;
+// ---- transport: EventSource; the first message is a snapshot, then deltas with contiguous seq ----------------------
+let source = null, streamSeq = null;
+
+function onStreamMessage(text) {
+  const f = JSON.parse(text);
+  if (f.type === "snapshot") {
+    applySnapshot(f);
+  } else {
+    if (streamSeq === null) return;
+    if (f.seq !== streamSeq + 1) { resync(); return; } // gap: drop the replica and start from a fresh snapshot
+    applyDelta(f);
+  }
+  streamSeq = f.seq;
+}
 
 function connect() {
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const sock = new WebSocket(`${proto}//${location.host}/ws${streamSeq ? "?since=" + streamSeq : ""}`);
-  ws = sock;
-  sock.onopen = () => { retryMs = 250; stopPolling(); $("conn").textContent = "live"; $("conn").className = "on"; };
-  sock.onmessage = ev => {
-    const f = JSON.parse(ev.data);
-    if (f.type !== "snapshot" && f.prevSeq !== streamSeq) { sock.close(); return; } // gap: server replays or resnapshots
-    applyFrame(f);
-  };
-  sock.onclose = () => {
-    if (ws !== sock) return;
-    ws = null;
-    $("conn").textContent = "polling"; $("conn").className = "";
-    startPolling();
-    setTimeout(connect, retryMs);
-    retryMs = Math.min(retryMs * 2, 5000);
-  };
+  streamSeq = null;
+  const es = new EventSource("/marketdata/stream");
+  source = es;
+  es.onopen = () => { $("conn").textContent = "live"; $("conn").className = "on"; };
+  es.onmessage = ev => { if (source === es) onStreamMessage(ev.data); };
+  es.onerror = () => { $("conn").textContent = "reconnecting"; $("conn").className = ""; streamSeq = null; };
 }
 
-function applyFrame(f) {
-  if (f.type === "snapshot") applySnapshot(f); else applyDelta(f);
-  streamSeq = f.seq;
+function resync() {
+  logLine("error", "GAP      missed a market-data message; resyncing from a snapshot");
+  if (embedded) { streamSeq = null; return; }
+  source.close();
+  connect();
 }
 
 function connectEmbedded() {
   $("conn").textContent = "in-browser"; $("conn").className = "on";
   $("conn").title = "The engine and simulator run in this page (compiled from Java)";
-  embedded.connect(text => applyFrame(JSON.parse(text)));
+  embedded.connect(onStreamMessage);
 }
 
-const live = () => embedded !== null || ws !== null && ws.readyState === WebSocket.OPEN;
-
-async function poll() {
-  if (polling || live()) return;
-  polling = true;
+// Account, simulation status and tape counters are polled; the book never is.
+let accountPolling = false;
+async function pollAccount() {
+  if (accountPolling) return;
+  accountPolling = true;
   try {
-    applyBook(await api("GET", "/api/book?since=" + lastFeedSeq));
+    const a = await api("GET", "/api/account");
+    Object.assign(model, { account: a.account, simulation: a.simulation, tradeCount: a.tradeCount, tradedVolume: a.tradedVolume });
+    dataDirty = true;
   } catch (err) {
     // server restarting or offline; retry on next tick
   } finally {
-    polling = false;
+    accountPolling = false;
   }
 }
-function startPolling() { if (!pollTimer) { poll(); pollTimer = setInterval(poll, 500); } }
-function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+function startAccountPolling() { pollAccount(); setInterval(pollAccount, 500); }
 
 function ticketError(text) { $("ticket-error").textContent = text || ""; }
 
@@ -392,7 +391,7 @@ async function command(action) {
     ticketError(err.message);
     logLine("error", "ERROR    " + err.message, true);
   }
-  await poll();
+  await pollAccount();
 }
 
 const cancel = id => command(() => api("DELETE", "/api/orders/" + encodeURIComponent(id)));
@@ -471,31 +470,41 @@ function renderSim(s) {
   if (html !== lastParticipants) $("participants").innerHTML = lastParticipants = html;
 }
 
-// Price levels in book order: bids high→low, asks low→high, each level FIFO by seqNum.
+// Price levels in book order: bids high→low, asks low→high. The stream is L2 (aggregated), so each level is drawn as
+// one segment; levels holding one of YOUR open orders are outlined.
 function levels() {
-  const by = { BUY: new Map(), SELL: new Map() };
-  for (const o of model.orders.values()) {
-    const t = T(o.price), m = by[o.side];
-    if (!m.has(t)) m.set(t, { t, price: o.price, side: o.side, orders: [], totalQty: 0 });
-    const l = m.get(t);
-    l.orders.push(o);
-    l.totalQty += o.qty;
-  }
-  const sorted = (m, dir) => [...m.values()].sort((a, b) => dir * (a.t - b.t)).map(l => (l.orders.sort((x, y) => x.seqNum - y.seqNum), l));
-  return { bids: sorted(by.BUY, -1), asks: sorted(by.SELL, 1) };
+  const mineAt = new Set(((model.account && model.account.openOrders) || []).filter(o => o.price !== null).map(o => o.side + T(o.price)));
+  const list = (map, side, dir) => [...map.entries()].sort((a, b) => dir * (a[0] - b[0])).map(([t, l]) => {
+    const key = (side === "BUY" ? "B" : "S") + t;
+    const mine = mineAt.has(side + t);
+    return { t, price: t / 100, side, totalQty: l.qty, count: l.n,
+      orders: [{ id: key, qty: l.qty, seqNum: "", participant: l.n + (l.n === 1 ? " order" : " orders"), mine }] };
+  });
+  return { bids: list(model.bids, "BUY", -1), asks: list(model.asks, "SELL", 1) };
 }
+
+function statsOf(book) {
+  const bid = book.bids.length ? book.bids[0].price : null, ask = book.asks.length ? book.asks[0].price : null;
+  return { bestBid: bid, bestAsk: ask, spread: bid !== null && ask !== null ? ask - bid : null,
+    lastTradePrice: model.lastTradePrice, restingOrders: [...book.bids, ...book.asks].reduce((n, l) => n + l.count, 0),
+    tradeCount: model.tradeCount, tradedVolume: model.tradedVolume };
+}
+
+const levelCount = (book, o) => {
+  const l = (o.side === "BUY" ? book.bids : book.asks).find(l => l.t === T(o.price));
+  return l ? l.count : "–";
+};
 
 // ---- tables: rows keyed by order id / trade number, updated in place ------------------------------------------------
 const orderRows = new Map();
 function renderOrders(book) {
-  const rows = [];
-  for (const level of [...book.bids, ...book.asks]) level.orders.forEach((o, i) => rows.push({ ...o, pos: i + 1 }));
-  rows.sort((x, y) => (y.mine - x.mine));
+  const rows = ((model.account && model.account.openOrders) || []).filter(o => o.price !== null)
+    .map(o => ({ ...o, id: Number(o.id), participant: "YOU", mine: true, pos: levelCount(book, o) }));
   const box = $("orders");
-  if (!rows.length) { orderRows.clear(); box.innerHTML = '<div class="empty">No resting orders</div>'; return; }
+  if (!rows.length) { orderRows.clear(); box.innerHTML = '<div class="empty">You have no resting orders</div>'; return; }
   let tbody = box.querySelector("tbody");
   if (!tbody) {
-    box.innerHTML = "<table><thead><tr><th>Who</th><th>Side</th><th>ID</th><th>Price</th><th>Qty</th><th>Queue</th><th></th></tr></thead><tbody></tbody></table>";
+    box.innerHTML = "<table><thead><tr><th>Who</th><th>Side</th><th>ID</th><th>Price</th><th>Qty</th><th>Orders at level</th><th></th></tr></thead><tbody></tbody></table>";
     tbody = box.querySelector("tbody");
     orderRows.clear();
   }
@@ -605,7 +614,7 @@ function setChartData(book) {
         fill: level.side === "BUY" ? (i % 2 ? "#16a34a" : "#22c55e") : (i % 2 ? "#dc2626" : "#ef4444"),
         stroke: o.id === highlightId ? "#fff" : o.mine ? "#facc15" : "#171e26", "stroke-width": o.id === highlightId || o.mine ? 2 : 1,
         "data-id": o.id, "data-side": level.side, "data-price": level.price, "data-qty": o.qty, "data-pos": i + 1,
-        "data-count": level.orders.length, "data-total": level.totalQty, "data-seq": o.seqNum,
+        "data-count": level.count, "data-total": level.totalQty, "data-seq": o.seqNum,
         "data-who": o.participant, "data-mine": o.mine
       });
     });
@@ -875,9 +884,10 @@ let lastFrame = performance.now(), chartMoving = false, forceChart = true;
 function frame(now) {
   const dt = Math.min(100, now - lastFrame);
   lastFrame = now;
-  if (dataDirty && model.stats) {
+  if (dataDirty && model.account && model.simulation) {
     dataDirty = false;
     const book = levels();
+    model.stats = statsOf(book);
     renderNumbers();
     renderSim(model.simulation);
     renderOrders(book);
@@ -943,9 +953,8 @@ const tooltip = $("tooltip");
 $("chart").addEventListener("mousemove", ev => {
   const d = ev.target.dataset;
   if (!d || !d.id) { tooltip.style.display = "none"; return; }
-  tooltip.innerHTML = `<b class="${d.side === "BUY" ? "bid" : "ask"}">${d.side} #${d.id}</b> ${who(d.who)}<br>` +
-    `${d.qty} @ ${px(d.price)} &nbsp;·&nbsp; seq ${d.seq}<br>queue position ${d.pos} of ${d.count} (level total ${d.total})` +
-    (d.mine === "true" ? `<br><span style="color:#7d8b99">click to cancel</span>` : "");
+  tooltip.innerHTML = `<b class="${d.side === "BUY" ? "bid" : "ask"}">${d.side} ${px(d.price)}</b><br>` +
+    `${d.total} total across ${esc(d.who)}` + (d.mine === "true" ? `<br><span style="color:#facc15">includes YOUR order</span>` : "");
   const wrap = $("chart-wrap").getBoundingClientRect();
   tooltip.style.display = "block";
   const left = Math.min(ev.clientX - wrap.left + 14, wrap.width - tooltip.offsetWidth - 4);
@@ -953,10 +962,6 @@ $("chart").addEventListener("mousemove", ev => {
   tooltip.style.top = (ev.clientY - wrap.top + 14) + "px";
 });
 $("chart").addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
-$("chart").addEventListener("click", ev => {
-  const d = ev.target.dataset;
-  if (d && d.id && d.mine === "true") { tooltip.style.display = "none"; cancel(d.id); }
-});
 
 $("sim-start").addEventListener("click", () => command(() => api("POST", "/simulate/start", {})));
 $("sim-stop").addEventListener("click", () => command(() => api("POST", "/simulate/stop", {})));
@@ -966,7 +971,8 @@ $("reset").addEventListener("click", () => command(() => api("POST", "/api/reset
 
 window.addEventListener("resize", () => { forceChart = true; });
 setType();
-if (embedded) connectEmbedded(); else { connect(); startPolling(); }
+if (embedded) connectEmbedded(); else connect();
+startAccountPolling();
 requestAnimationFrame(frame);
 </script>
 </body>

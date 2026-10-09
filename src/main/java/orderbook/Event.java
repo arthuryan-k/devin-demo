@@ -25,7 +25,9 @@ public sealed interface Event permits Event.OrderPlaced, Event.OrderRejected, Ev
             /** Cancel or amend of an ID that was never accepted or is no longer resting (filled or cancelled). */
             UNKNOWN_ORDER_ID,
             /** Fill-or-kill order that could not be filled in full; no trades happened and the book is unchanged. */
-            FOK_NOT_FILLABLE
+            FOK_NOT_FILLABLE,
+            /** The input ring was full when the command was submitted; it never reached the engine. Retry later. */
+            BUSY
         }
     }
 

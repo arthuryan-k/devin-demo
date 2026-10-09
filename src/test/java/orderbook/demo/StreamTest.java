@@ -2,7 +2,6 @@ package orderbook.demo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.InetAddress;
@@ -11,15 +10,19 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
-import org.eclipse.jetty.websocket.api.Session;
-import org.eclipse.jetty.websocket.client.WebSocketClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,170 +33,152 @@ import orderbook.Side;
 import orderbook.TimeInForce;
 import orderbook.sim.Simulator;
 
+/** {@code GET /marketdata/stream} over real HTTP, and HTTP + simulator producers sharing the pipeline. */
 class StreamTest {
 
     private static final long OTHER = 5_000;
+    private static final Pattern SEQ = Pattern.compile("\"seq\":(-?\\d+)");
 
     private DemoServer server;
-    private WebSocketClient ws;
-    private final HttpClient http = HttpClient.newHttpClient();
+    private final HttpClient client = HttpClient.newHttpClient();
+    private final List<CompletableFuture<?>> streams = new ArrayList<>();
 
     @BeforeEach
     void start() throws Exception {
         server = new DemoServer(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), new Simulator(1),
                 () -> new Account(DemoServer.USER, 10_000_00, 100));
         server.start();
-        ws = new WebSocketClient();
-        ws.start();
     }
 
     @AfterEach
-    void stop() throws Exception {
-        ws.stop();
+    void stop() {
+        streams.forEach(f -> f.cancel(true));
         server.stop();
     }
 
-    /** Collects text frames and checks that deltas chain onto the last frame seen. */
-    public static final class Frames implements Session.Listener.AutoDemanding {
-        final BlockingQueue<String> queue = new LinkedBlockingQueue<>();
-        volatile Session session;
-        long lastSeq = -1;
-
-        @Override
-        public void onWebSocketOpen(Session s) {
-            session = s;
-        }
-
-        @Override
-        public void onWebSocketText(String text) {
-            queue.add(text);
-        }
-
-        @Override
-        public void onWebSocketError(Throwable cause) {
-            // connection torn down at the end of a test
-        }
-
-        String next() throws InterruptedException {
-            String frame = queue.poll(5, TimeUnit.SECONDS);
-            assertNotNull(frame, "no frame within 5s");
-            if (type(frame).equals("delta") && lastSeq >= 0) {
-                assertEquals(lastSeq, num(frame, "prevSeq"), "delta must chain onto the previous frame");
-            }
-            lastSeq = num(frame, "seq");
-            return frame;
-        }
-
-        String until(Predicate<String> match) throws InterruptedException {
-            while (true) {
-                String frame = next();
-                if (match.test(frame)) {
-                    return frame;
-                }
-            }
-        }
+    private String url(String path) {
+        return "http://127.0.0.1:" + server.port() + path;
     }
 
-    private Frames connect(String query) throws Exception {
-        Frames frames = new Frames();
-        ws.connect(frames, URI.create("ws://127.0.0.1:" + server.port() + "/ws" + query)).get(5, TimeUnit.SECONDS);
-        return frames;
+    /** Opens the SSE stream; each {@code data:} payload lands in the returned queue. */
+    private BlockingQueue<String> subscribe() throws Exception {
+        BlockingQueue<String> messages = new LinkedBlockingQueue<>();
+        HttpResponse<Stream<String>> response = client.send(
+                HttpRequest.newBuilder(URI.create(url(DemoServer.STREAM_PATH))).header("Accept", "text/event-stream").build(),
+                HttpResponse.BodyHandlers.ofLines());
+        assertEquals(200, response.statusCode());
+        assertTrue(response.headers().firstValue("Content-Type").orElse("").startsWith("text/event-stream"));
+        streams.add(CompletableFuture.runAsync(() -> response.body()
+                .filter(line -> line.startsWith("data: "))
+                .forEach(line -> messages.add(line.substring(6)))));
+        return messages;
     }
 
-    private void post(String path, String form) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+    private static String next(BlockingQueue<String> messages) throws InterruptedException {
+        String m = messages.poll(5, TimeUnit.SECONDS);
+        assertNotNull(m, "no stream message within 5 s");
+        return m;
+    }
+
+    private static long seq(String message) {
+        Matcher m = SEQ.matcher(message);
+        assertTrue(m.find(), message);
+        return Long.parseLong(m.group(1));
+    }
+
+    private HttpResponse<String> post(String path, String form) throws Exception {
+        return client.send(HttpRequest.newBuilder(URI.create(url(path)))
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(form)).build();
-        assertEquals(200, http.send(request, HttpResponse.BodyHandlers.ofString()).statusCode());
+                .POST(HttpRequest.BodyPublishers.ofString(form)).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private void counterparty(long id, Side side, long priceTicks, long qty) {
         server.simulator().submit(OTHER, new Command.Place(Order.limit(id, OTHER, side, priceTicks, qty, TimeInForce.GTC)));
     }
 
-    static String type(String frame) {
-        Matcher m = Pattern.compile("^\\{\"type\":\"(\\w+)\"").matcher(frame);
-        assertTrue(m.find(), frame);
-        return m.group(1);
-    }
-
-    static long num(String json, String key) {
-        Matcher m = Pattern.compile("\"" + key + "\":(-?\\d+)").matcher(json);
-        assertTrue(m.find(), key + " in " + json);
-        return Long.parseLong(m.group(1));
-    }
-
-    private static int count(String text, String needle) {
-        return text.split(Pattern.quote(needle), -1).length - 1;
-    }
-
     @Test
-    void connectSendsSnapshotThenChainedDeltas() throws Exception {
+    void firstMessageIsSnapshotThenOneDeltaPerSequence() throws Exception {
         counterparty(1, Side.SELL, 100_00, 10);
-        Frames f = connect("");
-        String snapshot = f.next();
-        assertEquals("snapshot", type(snapshot));
-        assertTrue(snapshot.contains("\"reason\":\"connect\""));
-        assertTrue(snapshot.contains("{\"id\":1,\"side\":\"SELL\",\"price\":100.00,\"qty\":10"), snapshot);
+        BlockingQueue<String> messages = subscribe();
+        String snapshot = next(messages);
+        assertTrue(snapshot.startsWith("{\"type\":\"snapshot\",\"seq\":0,\"reason\":\"connect\""), snapshot);
+        assertTrue(snapshot.contains("\"asks\":[[10000,10,1]]"), snapshot);
 
-        post("/api/orders", "side=BUY&price=100.00&qty=4");
-        String partial = f.until(d -> d.contains("\"n\":1,"));
-        assertEquals("delta", type(partial));
-        assertTrue(partial.contains("{\"id\":1,\"side\":\"SELL\",\"price\":100.00,\"qty\":6"), partial);
-        assertTrue(partial.contains("\"sharesOwned\":104"), partial);
+        counterparty(2, Side.SELL, 100_00, 5);
+        String add = next(messages);
+        assertEquals(1, seq(add));
+        assertTrue(add.contains("\"levels\":[[\"u\",\"S\",10000,15,2]]"), add);
 
-        post("/api/orders", "side=BUY&price=100.00&qty=6");
-        String filled = f.until(d -> d.contains("\"n\":2,"));
-        assertTrue(filled.matches(".*\"removed\":\\[[^\\]]*\\b1\\b.*"), filled);
-        assertTrue(filled.contains("\"restingOrders\":0"), filled);
+        assertEquals(200, post("/api/orders", "side=BUY&type=LIMIT&price=100.00&qty=12&timeInForce=GTC").statusCode());
+        String trade = next(messages);
+        assertEquals(2, seq(trade));
+        assertTrue(trade.contains("\"levels\":[[\"u\",\"S\",10000,3,1]]"), trade);
+        assertTrue(trade.contains("\"type\":\"TradeExecuted\"") && trade.contains("\"taker\":\"YOU\""), trade);
     }
 
     @Test
-    void burstsAreCoalescedAndIdleSendsNothing() throws Exception {
-        Frames f = connect("");
-        f.next();
+    void resetBroadcastsAnEmptySnapshot() throws Exception {
+        counterparty(1, Side.BUY, 99_00, 4);
+        BlockingQueue<String> messages = subscribe();
+        next(messages);
+        assertEquals(200, post("/api/reset", "").statusCode());
+        String reset;
+        do {
+            reset = next(messages);
+        } while (!reset.startsWith("{\"type\":\"snapshot\""));
+        assertTrue(reset.contains("\"reason\":\"reset\",\"bids\":[],\"asks\":[]"), reset);
+    }
+
+    @Test
+    void concurrentHttpAndSimulatorSubmissionsShareOneSequence() throws Exception {
+        BlockingQueue<String> messages = subscribe();
+        long first = seq(next(messages));
+        assertEquals(200, post("/simulate/rate?perSec=100", "").statusCode());
+        assertEquals(200, post("/simulate/start", "").statusCode());
+        int threads = 4;
+        int perThread = 15;
+        Set<Long> httpSeqs = Collections.synchronizedSet(new HashSet<>());
+        List<Thread> workers = new ArrayList<>();
+        List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+        for (int t = 0; t < threads; t++) {
+            Thread worker = new Thread(() -> {
+                try {
+                    for (int i = 0; i < perThread; i++) {
+                        HttpResponse<String> r = post("/api/orders", "side=BUY&type=LIMIT&price=1.00&qty=1&timeInForce=GTC");
+                        assertEquals(200, r.statusCode(), r.body());
+                        assertTrue(r.body().contains("\"type\":\"OrderPlaced\""), r.body());
+                        assertTrue(httpSeqs.add(seq(r.body())), "duplicate seq");
+                    }
+                } catch (Throwable e) {
+                    failures.add(e);
+                }
+            });
+            workers.add(worker);
+            worker.start();
+        }
+        for (Thread worker : workers) {
+            worker.join();
+        }
+        assertTrue(failures.isEmpty(), failures.toString());
+        assertEquals(threads * perThread, httpSeqs.size());
+        assertEquals(200, post("/simulate/stop", "").statusCode());
+
+        long last = server.simulator().execute(() -> {
+            server.simulator().catchUp();
+            return server.simulator().appliedSeq();
+        });
+        assertTrue(last - first > threads * perThread, "the simulator also traded: " + (last - first));
+        long expect = first + 1;
+        while (expect <= last) {
+            String m = next(messages);
+            assertEquals(expect, seq(m), "stream sequence is contiguous");
+            expect++;
+        }
         server.simulator().run(() -> {
-            for (int i = 0; i < 50; i++) {
-                counterparty(100 + i, Side.BUY, 90_00 - i, 1);
+            for (Side side : Side.values()) {
+                assertEquals(server.simulator().engine().book().depth(side, Integer.MAX_VALUE),
+                        server.marketData().levels(side), "published levels match the engine replica");
             }
         });
-        String delta = f.next();
-        assertEquals("delta", type(delta));
-        String orders = delta.substring(delta.indexOf("\"orders\":"), delta.indexOf("\"removed\":"));
-        assertEquals(50, count(orders, "\"id\":"));
-        assertNull(f.queue.poll(300, TimeUnit.MILLISECONDS), "no frames while nothing changes");
-    }
-
-    @Test
-    void reconnectWithSinceReplaysMissedDeltas() throws Exception {
-        Frames f = connect("");
-        long seq = num(f.next(), "seq");
-        f.session.close();
-        counterparty(1, Side.SELL, 101_00, 1);
-        Thread.sleep(150);
-        counterparty(2, Side.SELL, 102_00, 1);
-        Thread.sleep(150);
-
-        Frames resumed = connect("?since=" + seq);
-        resumed.lastSeq = seq;
-        String first = resumed.next();
-        assertEquals("delta", type(first));
-        resumed.until(d -> d.contains("{\"id\":2,"));
-    }
-
-    @Test
-    void unknownSinceGetsSnapshot() throws Exception {
-        assertEquals("snapshot", type(connect("?since=999999").next()));
-    }
-
-    @Test
-    void resetBroadcastsFreshSnapshot() throws Exception {
-        counterparty(1, Side.SELL, 100_00, 10);
-        Frames f = connect("");
-        f.next();
-        post("/api/reset", "");
-        String reset = f.until(d -> type(d).equals("snapshot"));
-        assertTrue(reset.contains("\"reason\":\"reset\""));
-        assertTrue(reset.contains("\"orders\":[]"), reset);
     }
 }

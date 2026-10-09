@@ -1,6 +1,5 @@
 package orderbook.demo;
 
-import java.util.OptionalLong;
 import java.util.Random;
 import java.util.function.Consumer;
 
@@ -8,6 +7,8 @@ import org.teavm.jso.JSBody;
 import org.teavm.jso.JSFunctor;
 import org.teavm.jso.JSObject;
 
+import orderbook.marketdata.Outbox;
+import orderbook.pipeline.InlinePipeline;
 import orderbook.sim.Simulator;
 
 /**
@@ -39,8 +40,8 @@ public final class BrowserMain {
     private static native void export(RequestFn request, ConnectFn connect);
 
     public static void main(String[] args) {
-        DemoApp app = new DemoApp(new Simulator(new Random().nextLong(), new BrowserScheduler()), null);
-        app.start();
+        DemoApp app = new DemoApp(new Simulator(new Random().nextLong(), Simulator.DEFAULT_START_REFERENCE_TICKS,
+                new BrowserScheduler(), new InlinePipeline()), null);
         export((method, path, query, body) -> {
             DemoApp.Reply reply = app.handle(method, path, query, body);
             return reply.status() + "\n" + reply.json();
@@ -54,6 +55,6 @@ public final class BrowserMain {
             @Override
             public void close() {
             }
-        }, OptionalLong.empty()));
+        }));
     }
 }

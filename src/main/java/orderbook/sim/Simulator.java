@@ -1,13 +1,14 @@
 package orderbook.sim;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -19,6 +20,11 @@ import orderbook.Order;
 import orderbook.OrderBook;
 import orderbook.Side;
 import orderbook.TimeInForce;
+import orderbook.pipeline.DisruptorPipeline;
+import orderbook.pipeline.Gateway;
+import orderbook.pipeline.Pipeline;
+import orderbook.pipeline.Result;
+import orderbook.pipeline.ResultEvent;
 
 /**
  * Market simulation around one {@link MatchingEngine}. A weighted mix of {@link Persona}s trades around a hidden
@@ -40,6 +46,7 @@ public final class Simulator implements AutoCloseable {
     public static final long DEFAULT_START_REFERENCE_TICKS = 100_00;
     public static final double DEFAULT_RATE = 5;
     public static final double MAX_RATE = 100;
+    private static final long RESULT_TIMEOUT_MILLIS = 10_000;
 
     static final int MIN_PARTICIPANTS = 2;
     static final int MAX_PARTICIPANTS = 8;
@@ -77,11 +84,20 @@ public final class Simulator implements AutoCloseable {
     private volatile boolean running;
     private volatile double rate = DEFAULT_RATE;
 
-    // Confined to the executor thread.
+    private final Pipeline pipeline;
+    private final Gateway gateway;
+    private final boolean ownsPipeline;
+    private final Inbox inbox = new Inbox();
+    private final AtomicBoolean drainScheduled = new AtomicBoolean();
+
+    // Confined to the executor thread. The engine is a read-model replica, rebuilt from the output ring in sequence
+    // order; matching itself happens on the pipeline's engine thread.
     private MatchingEngine engine = new MatchingEngine();
+    private long applied = -1;
+    private Result lastApplied;
     private ReferencePrice reference;
     private final List<Participant> participants = new ArrayList<>();
-    private final Map<Long, String> labels = new HashMap<>();
+    private final Map<Long, String> labels = new ConcurrentHashMap<>();
     private final Map<Long, OrderOwner> owners = new LinkedHashMap<>() {
         private static final long serialVersionUID = 1L;
 
@@ -107,7 +123,20 @@ public final class Simulator implements AutoCloseable {
         this(seed, startReferenceTicks, new ExecutorScheduler("simulator"));
     }
 
+    /** Owns a fresh {@link DisruptorPipeline}, closed with this simulator. */
     public Simulator(long seed, long startReferenceTicks, Scheduler scheduler) {
+        this(seed, startReferenceTicks, scheduler, new DisruptorPipeline(), true);
+    }
+
+    /**
+     * Submits every command through {@code pipeline} (shared, not closed by this simulator). Attach other output
+     * consumers before any command is published so they see the whole sequence.
+     */
+    public Simulator(long seed, long startReferenceTicks, Scheduler scheduler, Pipeline pipeline) {
+        this(seed, startReferenceTicks, scheduler, pipeline, false);
+    }
+
+    private Simulator(long seed, long startReferenceTicks, Scheduler scheduler, Pipeline pipeline, boolean owns) {
         if (startReferenceTicks <= 0) {
             throw new IllegalArgumentException("startReferenceTicks must be positive");
         }
@@ -116,6 +145,10 @@ public final class Simulator implements AutoCloseable {
         this.random = new Random(seed);
         this.reference = new ReferencePrice(startReferenceTicks);
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
+        this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
+        this.gateway = new Gateway(pipeline);
+        this.ownsPipeline = owns;
+        pipeline.addConsumer(this::onResult);
         LOG.info("Simulator seed=" + seed);
     }
 
@@ -189,9 +222,12 @@ public final class Simulator implements AutoCloseable {
     public void reset() {
         stop();
         run(() -> {
-            engine = new MatchingEngine();
+            long seq;
+            while ((seq = pipeline.tryPublishReset()) == Pipeline.BUSY) {
+                Thread.yield();
+            }
+            awaitApplied(seq);
             reference = new ReferencePrice(startReferenceTicks);
-            owners.clear();
         });
     }
 
@@ -200,15 +236,54 @@ public final class Simulator implements AutoCloseable {
         if (!scheduler.isClosed()) {
             stop();
             scheduler.close();
+            if (ownsPipeline) {
+                pipeline.close();
+            }
         }
     }
 
     // ---- command submission ---------------------------------------------------------------------------------------
 
-    /** Processes {@code command} on behalf of {@code participantId} on the simulator thread and returns its events. */
+    /**
+     * Publishes {@code command} for {@code participantId} through the gateway and waits (on the simulator thread)
+     * until its result has been applied here. Returns its events, or a single {@code BUSY} rejection.
+     */
     public List<Event> submit(long participantId, Command command) {
         Objects.requireNonNull(command, "command");
-        return execute(() -> process(participantId, command));
+        return execute(() -> publish(participantId, command));
+    }
+
+    /** The front door every producer uses; shared with the HTTP handlers. */
+    public Gateway gateway() {
+        return gateway;
+    }
+
+    public Pipeline pipeline() {
+        return pipeline;
+    }
+
+    /** Simulator thread: applies results up to and including global sequence {@code seq}. */
+    public void awaitApplied(long seq) {
+        assertOnExecutor();
+        while (applied < seq) {
+            Result result = inbox.take(RESULT_TIMEOUT_MILLIS);
+            if (result == null) {
+                throw new IllegalStateException("no result for seq " + (applied + 1) + " within "
+                        + RESULT_TIMEOUT_MILLIS + " ms");
+            }
+            apply(result);
+        }
+    }
+
+    /** Simulator thread: applies every result for commands published so far (by any producer). */
+    public void catchUp() {
+        awaitApplied(pipeline.lastSequence());
+    }
+
+    /** Last global sequence applied to the replica, or -1. Simulator thread only. */
+    public long appliedSeq() {
+        assertOnExecutor();
+        return applied;
     }
 
     /** Runs {@code task} on the simulator thread (inline if already on it) and waits for its result. */
@@ -228,7 +303,7 @@ public final class Simulator implements AutoCloseable {
         });
     }
 
-    /** The engine. Only use it on the simulator thread, i.e. inside {@link #execute} or a {@link Listener}. */
+    /** The read-model replica of the engine. Only use it on the simulator thread, i.e. inside {@link #execute} or a {@link Listener}. */
     public MatchingEngine engine() {
         assertOnExecutor();
         return engine;
@@ -248,9 +323,8 @@ public final class Simulator implements AutoCloseable {
         return owner == null ? null : owner.side();
     }
 
-    /** Display label: {@code "YOU"}, a persona label such as {@code "MM-1001"}, or {@code "P<id>"}. */
+    /** Display label: {@code "YOU"}, a persona label such as {@code "MM-1001"}, or {@code "P<id>"}. Thread-safe. */
     public String label(long participantId) {
-        assertOnExecutor();
         if (participantId == USER_PARTICIPANT_ID) {
             return USER_LABEL;
         }
@@ -267,12 +341,59 @@ public final class Simulator implements AutoCloseable {
                 .toList());
     }
 
-    private List<Event> process(long participantId, Command command) {
+    /** Simulator thread: submit through the gateway (never straight to an engine) and wait for the result. */
+    private List<Event> publish(long participantId, Command command) {
+        assertOnExecutor();
         if (command instanceof Command.Place place && place.order().participantId() != participantId) {
             throw new IllegalArgumentException("order participantId " + place.order().participantId()
                     + " does not match submitter " + participantId);
         }
-        List<Event> events = engine.process(command);
+        Gateway.Submission submission = gateway.submit(participantId, command, false);
+        if (submission.busy() != null) {
+            return List.of(submission.busy());
+        }
+        if (submission.rejection() != null) {
+            throw new IllegalStateException("pre-trade check rejected: " + submission.rejection().message());
+        }
+        awaitApplied(submission.seq());
+        return lastApplied.events();
+    }
+
+    /** Output-ring consumer thread: hand the result to the simulator thread. */
+    private void onResult(ResultEvent result, boolean endOfBatch) {
+        inbox.add(result.toResult());
+        if (drainScheduled.compareAndSet(false, true) && !scheduler.isClosed()) {
+            scheduler.schedule(this::drain, 1);
+        }
+    }
+
+    private void drain() {
+        drainScheduled.set(false);
+        Result result;
+        while ((result = inbox.poll()) != null) {
+            apply(result);
+        }
+    }
+
+    /** Simulator thread: applies one result to the replica and notifies listeners, in global sequence order. */
+    private void apply(Result result) {
+        if (result.seq() <= applied) {
+            return;
+        }
+        if (result.seq() != applied + 1) {
+            throw new IllegalStateException("result " + result.seq() + " out of order after " + applied);
+        }
+        applied = result.seq();
+        lastApplied = result;
+        if (result.reset()) {
+            engine = new MatchingEngine();
+            owners.clear();
+            return;
+        }
+        Command command = result.command();
+        engine.process(command);
+        long participantId = result.participantId();
+        List<Event> events = result.events();
         for (Event event : events) {
             if (event instanceof Event.OrderPlaced placed && command instanceof Command.Place place) {
                 owners.put(placed.orderId(), new OrderOwner(participantId, place.order().side()));
@@ -284,7 +405,6 @@ public final class Simulator implements AutoCloseable {
         for (Listener listener : listeners) {
             listener.onCommand(participantId, command, events);
         }
-        return events;
     }
 
     private void creditFill(long orderId, long qty) {
@@ -443,7 +563,7 @@ public final class Simulator implements AutoCloseable {
     void exit(Participant participant) {
         assertOnExecutor();
         for (Order order : ownOrders(participant.id())) {
-            process(participant.id(), new Command.Cancel(order.id()));
+            publish(participant.id(), new Command.Cancel(order.id()));
         }
         participants.remove(participant);
     }
@@ -455,9 +575,9 @@ public final class Simulator implements AutoCloseable {
 
     private void cancelAllNonUserOrders() {
         for (Side side : Side.values()) {
-            for (Order order : engine.book().orders(side)) {
+            for (Order order : List.copyOf(engine.book().orders(side))) {
                 if (order.participantId() != USER_PARTICIPANT_ID) {
-                    process(order.participantId(), new Command.Cancel(order.id()));
+                    publish(order.participantId(), new Command.Cancel(order.id()));
                 }
             }
         }
@@ -540,21 +660,21 @@ public final class Simulator implements AutoCloseable {
 
         @Override
         public void placeLimit(Side side, long price, long qty, TimeInForce timeInForce) {
-            Order order = Order.limit(engine.nextOrderId(), self.id(), side, Math.max(1, price), Math.max(1, qty),
+            Order order = Order.limit(gateway.nextOrderId(), self.id(), side, Math.max(1, price), Math.max(1, qty),
                     timeInForce);
-            process(self.id(), new Command.Place(order));
+            publish(self.id(), new Command.Place(order));
         }
 
         @Override
         public void placeMarket(Side side, long qty) {
-            Order order = Order.market(engine.nextOrderId(), self.id(), side, Math.max(1, qty), TimeInForce.IOC);
-            process(self.id(), new Command.Place(order));
+            Order order = Order.market(gateway.nextOrderId(), self.id(), side, Math.max(1, qty), TimeInForce.IOC);
+            publish(self.id(), new Command.Place(order));
         }
 
         @Override
         public void cancel(long orderId) {
             requireOwn(orderId);
-            process(self.id(), new Command.Cancel(orderId));
+            publish(self.id(), new Command.Cancel(orderId));
         }
 
         @Override
@@ -562,7 +682,7 @@ public final class Simulator implements AutoCloseable {
             requireOwn(orderId);
             Long price = newPrice == null ? null : Math.max(1, newPrice);
             Long qty = newQty == null ? null : Math.max(1, newQty);
-            process(self.id(), new Command.Amend(orderId, price, qty));
+            publish(self.id(), new Command.Amend(orderId, price, qty));
         }
 
         @Override
