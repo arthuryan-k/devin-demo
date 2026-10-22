@@ -1,9 +1,9 @@
 # devin-demo
 
-A price-time priority exchange in Java 17, with a market simulator that trades against it, organized as a monorepo
-for a growing set of services.
+A price-time priority exchange in Java 17 with a market simulator that trades against it, and a professional
+React/TypeScript trading workstation on top, organized as a monorepo for a growing set of services.
 
-**[Live demo](https://arthuryan-k.github.io/devin-demo/)**
+**[Live demo](https://arthuryan-k.github.io/devin-demo/)** — the trading workstation running on in-browser demo data (log in as `demo` / `demo1234`).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol pipelines, journal, market data).
 
@@ -12,9 +12,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol 
 | Path | What it is |
 |---|---|
 | `services/` | One directory per deployable service; each builds on its own toolchain. |
-| `services/matching-engine/` | Java 17 / Maven: the exchange core (one matching engine, Disruptor pipeline and journal per symbol), participant HTTP API, market-data stream, market simulator and the TeaVM browser build. |
+| `services/matching-engine/` | Java 17 / Maven: the exchange core (one matching engine, Disruptor pipeline and journal per symbol), participant HTTP API, market-data stream and market simulator. |
 | `services/gateway/` | TypeScript / Fastify: the single public API. It authenticates callers, rate-limits them, checks risk, places orders on the bus and returns the engine's result. Clients use decimal prices. See its [README](services/gateway/README.md). |
 | `services/market-data/` | Python / FastAPI: per-symbol WebSocket L2 feeds (snapshot, then ordered deltas, with resync on gaps). See its [README](services/market-data/README.md). |
+| `services/web/` | React 18 / TypeScript / Vite: the trading workstation. The same build runs against the gateway or, for the live demo, an in-browser fake exchange. |
 | `schemas/bus/` | JSON Schemas of the event-bus topics (`commands.<symbol>`, `events.<symbol>`, `marketdata.<symbol>`). |
 | `services/auth-service/` | TypeScript / Fastify: signup, login (JWT), API keys and participant accounts in Postgres. |
 | `services/reference-data-service/` | TypeScript / Fastify: the listed symbols and their trading parameters over REST. |
@@ -22,7 +23,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol 
 | `db/migrations/` | Flyway SQL migrations for the brokerage database. |
 | `docker-compose.yml` | Postgres, migrations, the Redpanda (Kafka API) event bus, the matching engine and the services above. |
 | `ARCHITECTURE.md` | Internals of the services. |
-| `.github/workflows/` | CI: tests the matching engine and deploys the live demo to GitHub Pages. |
+| `.github/workflows/` | CI: tests the matching engine and the web app, and deploys the live demo to GitHub Pages. |
 
 Listed symbols (served by the reference-data service, built in otherwise): `ACME`, `GLOBX`, `INITD`, `NVTA`. Every book starts empty, with no liquidity and no price; the demo
 and simulator currently trade `ACME`.
@@ -36,14 +37,50 @@ immediate-or-cancel and fill-or-kill orders, amends, cancels and self-trade prev
 a crash-safe journal. Around it sits an interactive demo: a simulated market full of trading bots, which you can
 join and trade against from your browser or over an HTTP API.
 
-## Using the demo
+## Trading workstation
 
-1. Open the [live demo](https://arthuryan-k.github.io/devin-demo/) and press **Simulate** to start the market. The
-   simulation starts stopped.
+A dense, dark, multi-panel trading UI in the style of a professional broker terminal:
+
+- **Login / open account**, then a workstation for the four listed symbols.
+- **Watchlist** with last, change, bid/ask and volume; click a row to switch symbol.
+- **Per-symbol market**: quote header, price chart (line or 15-second candles with volume), L2 depth ladder with
+  your own resting size marked, and time & sales.
+- **Order ticket**: buy/sell, `LIMIT`/`MARKET`, `GTC`/`IOC`/`FOK`, with estimated cost and available funds/shares.
+  Click a depth level to pre-fill the price.
+- **Live orders**: modify (price/quantity) and cancel working orders.
+- **Portfolio**: one shared cash balance across symbols, reserved cash, available funds, per-symbol positions with
+  reserved shares, average cost, mark, market value, and realized/unrealized/session P&L.
+- **Executions, order history and trade history** from the account's history.
+
+### Live demo
+
+The [live demo](https://arthuryan-k.github.io/devin-demo/) is a static build of the same UI. It runs a small fake
+exchange in the browser: synthetic liquidity and trade flow around a random walk, a seeded portfolio and history,
+and your orders matched against the synthetic book. No backend is involved; nothing leaves the browser.
+
+### Run the UI locally
+
+From `services/web/` (Node 20):
+
+```
+npm ci
+npm run dev:mock                      # UI on the in-browser fake exchange at http://localhost:5173/
+npm run dev                           # UI against the gateway (GATEWAY_URL, default http://localhost:8080)
+npm test                              # component and integration tests (Vitest)
+npm run test:e2e                      # builds the static Pages bundle and drives it in Chromium (Playwright)
+npm run build:pages                   # static Pages bundle into dist-pages/
+```
+
+`npm run dev` proxies `/api` to `GATEWAY_URL` and `/ws` to `MARKET_DATA_URL` (default: the gateway).
+
+## Matching engine demo
+
+1. Run the matching engine (`mvn compile exec:java`, below) and start the simulated market with
+   `curl -X POST localhost:8080/simulate/start` (it starts stopped).
 2. You trade as participant **YOU**, with a cash and share balance.
 3. Place limit or market orders, cancel them, or amend their price and quantity.
-4. Watch the order book, the trade tape and the event log update live as your orders and the simulated
-   participants' orders are matched.
+4. The order book, trade tape and event log update live as your orders and the simulated participants' orders are
+   matched.
 
 ```mermaid
 flowchart LR
@@ -107,7 +144,6 @@ From `services/matching-engine/`:
 ```
 mvn test                              # engine, simulator, server and property tests
 mvn compile exec:java                 # local server at http://localhost:8080/ (SIM_SEED=42 for a fixed seed)
-scripts/build-pages.sh                # static browser build into target/pages
 mvn verify                            # plus the Redpanda integration tests (needs Docker)
 ```
 

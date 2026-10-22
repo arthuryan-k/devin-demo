@@ -487,3 +487,36 @@ horizontally scalable service. Its message formats are documented in
   - A client that falls behind has its queue replaced by a single `slow-consumer` snapshot, so a slow client costs
     O(book) memory, not O(backlog).
   - Prices are rendered per subscriber, as decimal strings by default or as raw ticks with `?prices=ticks`.
+
+## Web frontend (`services/web`)
+
+A React 18 / TypeScript single-page app built with Vite. Every panel talks to the outside world through one
+`Backend` interface (`src/api/backend.ts`), with two implementations chosen at build time by `VITE_BACKEND`:
+
+```mermaid
+flowchart LR
+    UI["React panels"] --> B["Backend interface"]
+    B --> H["HttpBackend (dev / production build)"]
+    B --> M["MockBackend (Pages build)"]
+    H -- "REST /api/*" --> G["Gateway"]
+    H -- "WebSocket /ws/marketdata/{symbol}" --> MD["Market-data service"]
+    M --> F["FakeExchange (in-browser)"]
+```
+
+- **`HttpBackend`:** bearer-token session (`sessionStorage`), `POST /api/auth/login|signup`,
+  `GET /api/reference/symbols`, `POST /api/orders`, `PATCH`/`DELETE /api/orders/{id}`, `GET /api/portfolio`,
+  `GET /api/history/orders|trades`. Prices are decimals at this edge. Market data is one WebSocket per symbol; on
+  reconnect or a sequence gap it sends `{"op":"resync"}` and expects a fresh snapshot. Response parsing tolerates the
+  common field-name variants so the UI does not break on minor contract changes.
+- **Market data:** `BookReplica` (`src/marketdata/bookReplica.ts`) is the TypeScript twin of the Java test replica:
+  it applies the same snapshot/delta wire format (integer ticks) and returns `snapshot`, `delta`, `stale` or `gap`.
+  `MarketStore` keeps one replica per symbol plus last/high/low/volume, the trade tape and the chart series, and
+  batches React notifications to one per animation frame, so a busy feed re-renders at most at display rate.
+- **`MockBackend` / `FakeExchange`:** a deterministic (seeded) fake exchange in integer cents. Each symbol has
+  synthetic liquidity around a random-walk reference price and a background trade flow; the user's orders match
+  against that book with the same rules as the engine (`LIMIT`/`MARKET`, `GTC`/`IOC`/`FOK`, amend, cancel) and the
+  same account rules (cash and share reservations, no shorting, average-cost P&L). It publishes the real
+  snapshot/delta wire format, so the Pages build exercises the same replica and rendering code as production.
+  Accounts and the session live in `localStorage`.
+- **Tests:** Vitest + Testing Library for components against `MockBackend` and a hand-driven feed fixture;
+  Playwright drives the built Pages bundle in Chromium and asserts no external requests are made.

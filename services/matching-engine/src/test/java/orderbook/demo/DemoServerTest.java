@@ -72,7 +72,7 @@ class DemoServerTest {
         HttpResponse<String> res = send("GET", "/", null);
         assertEquals(200, res.statusCode());
         assertTrue(res.body().contains("Order Book Demo"));
-        assertTrue(res.body().contains("Balance sheet"));
+        assertTrue(res.body().contains("services/web"));
         assertEquals(404, send("GET", "/nope", null).statusCode());
     }
 

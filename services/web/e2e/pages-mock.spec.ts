@@ -28,6 +28,7 @@ test("static Pages build loads standalone with fixture data and trades", async (
   const ask = await page.getByTestId("ask-level").last().locator(".price").innerText();
   await page.getByLabel("Limit price").fill((Number(ask) + 0.05).toFixed(2));
   await page.getByRole("button", { name: "Buy NVTA" }).click();
+  await expect(page.getByTestId("status-bar")).toContainText(/BUY 10 NVTA LMT [\d.]+ IOC: (FILLED|PARTIALLY FILLED|CANCELLED)/);
   await expect(page.getByTestId("pos-NVTA-qty")).not.toHaveText("25", { timeout: 5_000 });
 
   await page.getByRole("tab", { name: "Order History" }).click();

@@ -44,20 +44,27 @@ describe("login", () => {
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/api/auth/login")) {
         expect(JSON.parse(String(init?.body))).toEqual({ username: "bob", password: "pw" });
-        return new Response(JSON.stringify({ token: "jwt-123", user: { username: "bob", participantId: 1042, accountId: "A42" } }));
+        return new Response(
+          JSON.stringify({
+            token: "jwt-123",
+            tokenType: "Bearer",
+            user: { id: 42, username: "bob", kind: "human" },
+            account: { id: 42, participantId: 1042, label: "bob", startingCash: "10000.00" },
+          }),
+        );
       }
       expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer jwt-123");
       return new Response(JSON.stringify([{ symbol: "ACME", name: "Acme Corp", tickSize: "0.01", lotSize: 1 }]));
     });
     const b = new HttpBackend({ fetchImpl: fetchImpl as unknown as typeof fetch, storage: sessionStorage });
     const s = await b.login("bob", "pw");
-    expect(s).toEqual({ token: "jwt-123", username: "bob", participantId: 1042, accountId: "A42" });
+    expect(s).toEqual({ token: "jwt-123", username: "bob", participantId: 1042, accountId: "42" });
     expect(await b.instruments()).toEqual([{ symbol: "ACME", name: "Acme Corp", tickSize: 0.01, lotSize: 1 }]);
     expect(new HttpBackend({ fetchImpl: fetchImpl as unknown as typeof fetch }).restoreSession()?.token).toBe("jwt-123");
   });
 
   it("maps a 401 from the gateway to a login error", async () => {
-    const fetchImpl = async () => new Response(JSON.stringify({ reason: "UNAUTHORIZED", message: "Invalid username or password" }), { status: 401 });
+    const fetchImpl = async () => new Response(JSON.stringify({ error: "invalid_credentials", message: "Invalid username or password" }), { status: 401 });
     const b = new HttpBackend({ fetchImpl: fetchImpl as unknown as typeof fetch });
     await expect(b.login("x", "y")).rejects.toMatchObject({ status: 401, message: "Invalid username or password" });
     await waitFor(() => expect(b.restoreSession()).toBeNull());

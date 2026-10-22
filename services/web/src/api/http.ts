@@ -84,12 +84,14 @@ export class HttpBackend implements Backend {
 
   private async authenticate(path: string, username: string, password: string): Promise<Session> {
     const body = await this.request<Json>("POST", path, { username, password }, false);
+    // auth-service session body: {token, user: {id, username}, account: {id, participantId}}
     const user = (body.user as Json | undefined) ?? body;
+    const account = (body.account as Json | undefined) ?? {};
     const session: Session = {
       token: String(body.token ?? body.accessToken ?? ""),
       username: String(user.username ?? username),
-      participantId: num(user.participantId ?? body.participantId),
-      accountId: String(user.accountId ?? body.accountId ?? ""),
+      participantId: num(account.participantId ?? user.participantId ?? body.participantId),
+      accountId: String(account.id ?? user.accountId ?? body.accountId ?? ""),
     };
     this.session = session;
     this.storage?.setItem(SESSION_KEY, JSON.stringify(session));
