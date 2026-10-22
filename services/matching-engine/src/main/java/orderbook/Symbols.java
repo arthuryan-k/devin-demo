@@ -3,8 +3,9 @@ package orderbook;
 import java.util.List;
 
 /**
- * The fixed set of tradable symbols. Each one has its own matching engine, pipeline and journal (see
- * {@code orderbook.exchange.ExchangeCore}); nothing is shared between symbols except the order-id space.
+ * The built-in listing, used when no reference-data service is configured (tests, the in-page build). Each hosted
+ * symbol has its own matching engine, pipeline and journal (see {@code orderbook.exchange.ExchangeCore}); nothing is
+ * shared between symbols except the order-id space.
  */
 public final class Symbols {
 
@@ -20,6 +21,20 @@ public final class Symbols {
     public static final String DEFAULT = ACME;
 
     private Symbols() {
+    }
+
+    /** Listing-code shape shared with the reference-data table: an upper-case letter, then up to 9 of A-Z/0-9. */
+    public static final java.util.regex.Pattern CODE = java.util.regex.Pattern.compile("[A-Z][A-Z0-9]{0,9}");
+
+    /**
+     * Returns {@code symbol} if it is a well-formed listing code (hosted symbols may come from the reference-data
+     * service rather than {@link #ALL}). @throws IllegalArgumentException otherwise
+     */
+    public static String requireValid(String symbol) {
+        if (symbol == null || !CODE.matcher(symbol).matches()) {
+            throw new IllegalArgumentException("invalid symbol '" + symbol + "'");
+        }
+        return symbol;
     }
 
     public static boolean isListed(String symbol) {

@@ -2,10 +2,15 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 jobs:
   matching-engine:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/matching-engine
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -16,9 +21,34 @@ jobs:
           cache-dependency-path: services/matching-engine/pom.xml
       - name: Unit tests and Redpanda integration tests
         run: mvn -B verify
-        working-directory: services/matching-engine
       - name: Browser build
         run: scripts/build-pages.sh
-        working-directory: services/matching-engine
-      - name: Compose config
-        run: docker compose config --quiet
+
+  node-services:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth-service, reference-data-service, history-writer]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      # Testcontainers: Postgres + Flyway (db/migrations), and Redpanda for history-writer.
+      - run: npm test
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker compose build

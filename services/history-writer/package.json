@@ -1,0 +1,32 @@
+{
+  "name": "history-writer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Consumes events.<symbol> from the bus and writes order lifecycle and fills to Postgres history tables",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fastify": "^5.12.7",
+    "kafkajs": "^2.2.4",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.2.1",
+    "@testcontainers/redpanda": "^12.2.1",
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "testcontainers": "^12.2.1",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

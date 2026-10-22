@@ -15,7 +15,7 @@ import orderbook.sim.Simulator;
  * session's {@link #userKey() reserved key} maps to {@link Simulator#USER_PARTICIPANT_ID} ("YOU"), which can never be
  * registered. Thread-safe and never touches the simulator loop.
  */
-public final class ParticipantRegistry {
+public final class ParticipantRegistry implements ParticipantDirectory {
 
     public static final long FIRST_PARTICIPANT_ID = 1001;
     private static final int KEY_BYTES = 24;
@@ -35,11 +35,13 @@ public final class ParticipantRegistry {
     }
 
     /** The reserved key of the browser session ("YOU"). */
+    @Override
     public String userKey() {
         return userKey;
     }
 
     /** Registers a new participant labelled {@code <name>-<id>} (name defaults to {@code P}). */
+    @Override
     public Credentials register(String name) {
         String prefix = sanitize(name);
         long id = nextId.getAndIncrement();
@@ -51,11 +53,13 @@ public final class ParticipantRegistry {
         return credentials;
     }
 
+    @Override
     public Optional<Credentials> resolve(String apiKey) {
         return apiKey == null || apiKey.isBlank() ? Optional.empty() : Optional.ofNullable(byKey.get(apiKey.trim()));
     }
 
     /** Display label: {@code YOU}, a registered label, {@code anon}, or {@code P<id>}. */
+    @Override
     public String label(long participantId) {
         if (participantId == Simulator.USER_PARTICIPANT_ID) {
             return Simulator.USER_LABEL;

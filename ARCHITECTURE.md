@@ -218,14 +218,108 @@ Host clients use `localhost:19092`. Configuration (environment): `KAFKA_BOOTSTRA
 `mvn verify`) publishes to `commands.ACME`, consumes `events.ACME` and checks matching, `seq` order, correlation,
 the DLQ, market data, restart without republishing, and rebuilding a lost journal from the bus.
 
+## Brokerage services and Postgres
+
+Postgres is the system of record for identities, accounts, reference data and history. Every service owns its own
+tables, and the matching engine never touches the database: it stays an in-memory, journal-backed sequencer.
+
+```mermaid
+flowchart LR
+    browser["Browser / API clients"] -->|"signup, login, API keys"| auth["auth-service (TS, Fastify)"]
+    browser -->|"orders (X-Api-Key or ob_session JWT)"| engine["matching-engine (Java)"]
+    engine -->|"verify key / session, register"| auth
+    engine -->|"GET /symbols at startup"| refdata["reference-data-service (TS, Fastify)"]
+    engine -->|"events.<symbol>"| bus["Redpanda"]
+    bus --> writer["history-writer (TS, KafkaJS)"]
+    auth --> pg[("Postgres")]
+    refdata --> pg
+    writer --> pg
+    migrate["db-migrate (Flyway)"] --> pg
+```
+
+| Component | Stack | Owns | Doc |
+|---|---|---|---|
+| `db/migrations` | Flyway 10, plain SQL | schema history for every service | below |
+| `auth-service` | TypeScript, Node 22, Fastify 5, `pg`, bcrypt, `jose` | `users`, `accounts`, `api_keys` | [README](services/auth-service/README.md) |
+| `reference-data-service` | TypeScript, Node 22, Fastify 5, `pg` | `reference_data` (read side) | [README](services/reference-data-service/README.md) |
+| `history-writer` | TypeScript, Node 22, KafkaJS, Fastify, `pg` | `orders_history`, `trades_history` | [README](services/history-writer/README.md) |
+
+TypeScript and Fastify are a common choice for identity and edge services, and they share one toolchain with the
+gateway and frontend. The migrations are plain SQL, so a service in any language (such as the Python portfolio
+service) adds its own `V<n>__*.sql` file to the same history. Compose runs `db-migrate` as a one-shot job, and every
+database client waits for it to complete successfully.
+
+### Schema
+
+- **`users`**: the username is unique case-insensitively (`lower(username)`). `kind` is `human` or `simulated`.
+  `password_hash` is a bcrypt hash, and it is null only for simulated users, who authenticate with API keys.
+- **`accounts`**: one per user. `participant_id` comes from `participant_id_seq`, which starts at 1001. Participant 1
+  stays the anonymous `YOU` seat, and 0 means no participant. `starting_cash` is the sum of the active
+  `initial_cash_grant` values at signup.
+- **`api_keys`**: `key_hash` is the SHA-256 of the key (32 bytes, `BYTEA`), and the plaintext `ob_<48 hex>` is
+  returned only when the key is issued. The table also keeps `key_prefix` for display, `label`, `last_used_at` and
+  `revoked_at`.
+- **`reference_data`**: `symbol`, `name`, `currency`, `tick_size NUMERIC(18,8)`, `lot_size`,
+  `initial_cash_grant NUMERIC(18,2)`, `active` and `display_order`. `V2` seeds ACME, GLOBX, INITD and NVTA.
+- **`orders_history` / `trades_history`**: append-only. Each row is unique on `(symbol, seq, event_index)`, where
+  `seq` is the engine's per-symbol sequence and `event_index` is the event's position in the `events.<symbol>`
+  record. Prices are integer ticks (`price_ticks`), and extra fields go in `details JSONB`.
+
+### Auth contract
+
+- Signup and login (`POST /auth/signup`, `POST /auth/login`, with JSON `{username,password}`) return an RS256 JWT and
+  also set it as the `HttpOnly` `ob_session` cookie. The claims are `sub` (user id), `participantId`, `accountId`,
+  `username` and `kind`, with issuer `devin-demo-auth` and audience `devin-demo`. Tokens expire after 1 h by default.
+- Verifiers check the token locally against `GET /.well-known/jwks.json` (matching on `kid`), so they need no shared
+  secret and no call per request. `JWT_PRIVATE_KEY` (PKCS#8 PEM) pins the signing key. Without it, each start
+  generates a new key, and tokens issued before the restart stop verifying.
+- Unknown usernames and wrong passwords get the same `401`.
+- Internal lookups are `GET /internal/api-keys/verify` with the key in the `X-Api-Key` header (headers stay out of
+  access logs) and `GET /internal/participants/{id}`. When `INTERNAL_TOKEN` is set, these routes require the
+  matching `X-Internal-Token`.
+- `POST /participants/register` creates a simulated user, its account and its first API key in one transaction. The
+  simulator's participants get real accounts this way.
+
+### Reference data in the engine
+
+`Symbols.ALL` is now only the built-in fallback. `EngineService` hosts `SYMBOLS` if it is set, otherwise the
+active listing from `REFDATA_URL` (fetched with retries while compose starts), and otherwise `Symbols.ALL`.
+`DemoServer` works the same way and serves the listing at `GET /api/symbols`, which the page uses for its header. A
+hosted symbol only needs to be a well-formed code (`[A-Z][A-Z0-9]{0,9}`, `Symbols.requireValid`); it does not have
+to appear in `Symbols.ALL`.
+
+### History
+
+`history-writer` consumes every topic matching `^events\.[A-Z][A-Z0-9]{0,9}$` in consumer group `history-writer`.
+KafkaJS resolves a regex subscription only once, at subscribe time, but the engine creates its topics when it starts.
+The worker therefore lists topics itself on startup and every `TOPIC_DISCOVERY_MS`. When a new listing appears, it
+re-subscribes the group, keeping the committed offsets. It maps each record
+(`schemas/bus/events.schema.json`) to rows. `OrderPlaced`, `OrderAmended`, `OrderCancelled` and `OrderRejected`
+become `orders_history` rows, and `TradeExecuted` becomes a `trades_history` row. A record's rows are written in one
+transaction with `ON CONFLICT DO NOTHING`, and the offset is committed only afterwards. Redelivery is therefore
+idempotent, and the history matches the engine's sequence exactly. Records that fail to parse are logged and skipped
+as poison messages. A database error stops consumption without committing, so the record is retried.
+
+The same process serves a read API on port 8083: `GET /v1/orders` and `GET /v1/trades`, with `participantId`
+(required), `symbol` and `limit` (default 100, maximum 1000). Results are newest first. Trades match either the maker
+or the taker. The service does no authentication of its own; the gateway calls it at `HISTORY_URL` and passes the
+caller's participant id. The reads use the `(participant_id, event_time DESC)` indexes on both tables.
+
 ## Participant API
 
 Endpoints and an example are in the [README](README.md#participant-api).
 
-- **Authentication:** keys live in an in-memory registry that maps each key to its participant ID. A missing or
-  unknown key gets `401`, and touching another participant's order is rejected with `NOT_OWN_OPEN_ORDER`.
-  The browser is `YOU` (participant 1). The page sets an `HttpOnly` session cookie holding a reserved key that can
-  never be registered.
+- **Authentication:** the server resolves callers through a `ParticipantDirectory`. With `AUTH_SERVICE_URL` set it
+  is `AuthServiceDirectory`, which looks up API keys (`GET /internal/api-keys/verify`) and session JWTs
+  (`GET /auth/me`) against the [auth service](#brokerage-services-and-postgres) and registers participants there.
+  Positive lookups are cached for 30 s (`auth.cacheSeconds`), and unknown keys for a tenth of that. Labels are
+  fetched in the background so the market-data path never blocks. If the auth service is unreachable, callers get
+  `503 AUTH_UNAVAILABLE` instead of `401`. Without `AUTH_SERVICE_URL` (tests and the in-page build), the in-memory
+  `ParticipantRegistry` is used. A missing or unknown key gets `401`, and touching another participant's order is
+  rejected with `NOT_OWN_OPEN_ORDER`.
+- **Browser sessions:** someone who signed up or logged in carries the auth service's JWT in the `ob_session`
+  cookie and trades as their own account, and the page never overwrites that cookie. Anonymous visitors get the
+  local reserved key for `YOU` (participant 1), which can never be registered.
 - **Admission control:** checks run in the gateway before anything is published to the input ring. Each
   participant has a token bucket of 200 messages/sec with a burst of 400 (orders, cancels and amends each cost one)
   and may have at most 100 open orders. A breach gets `429` with reason `RATE_LIMITED` or `MAX_OPEN_ORDERS`.

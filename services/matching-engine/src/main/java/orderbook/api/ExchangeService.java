@@ -30,16 +30,21 @@ public final class ExchangeService {
     }
 
     private final Simulator simulator;
-    private final ParticipantRegistry registry;
+    private final ParticipantDirectory registry;
     private final AdmissionControl admission;
 
     public ExchangeService(Simulator simulator, AdmissionControl.Limits limits, Random keyRandom) {
+        this(simulator, limits, new ParticipantRegistry(keyRandom));
+    }
+
+    /** {@code directory} authenticates callers and registers participants (in memory or the auth service). */
+    public ExchangeService(Simulator simulator, AdmissionControl.Limits limits, ParticipantDirectory directory) {
         this.simulator = simulator;
-        this.registry = new ParticipantRegistry(keyRandom);
+        this.registry = directory;
         this.admission = new AdmissionControl(limits, System::nanoTime);
     }
 
-    public ParticipantRegistry registry() {
+    public ParticipantDirectory registry() {
         return registry;
     }
 

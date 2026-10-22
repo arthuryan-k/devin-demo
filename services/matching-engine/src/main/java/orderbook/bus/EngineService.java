@@ -1,6 +1,8 @@
 package orderbook.bus;
 
 import java.io.IOException;
+import java.net.URI;
+import java.time.Duration;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -26,6 +28,8 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import orderbook.Symbols;
 import orderbook.exchange.ExchangeCore;
 import orderbook.journal.Journal;
+import orderbook.services.Instrument;
+import orderbook.services.ReferenceDataClient;
 
 /**
  * The standalone matching-engine service: one {@link SymbolBus} per hosted symbol, each with its own journal
@@ -34,7 +38,8 @@ import orderbook.journal.Journal;
  *
  * <p>Configuration (environment variable, else system property, else default):
  * {@code KAFKA_BOOTSTRAP_SERVERS} / {@code bus.bootstrap} ({@code localhost:9092}),
- * {@code SYMBOLS} / {@code bus.symbols} (every listed symbol),
+ * {@code SYMBOLS} / {@code bus.symbols} (else the active listing of {@code REFDATA_URL} / {@code refdata.url},
+ * the reference-data service; else {@link Symbols#ALL}),
  * {@code JOURNAL_PATH} / {@code journal.path} ({@code journal}),
  * {@code SNAPSHOT_EVERY} / {@code journal.snapshotEvery} ({@code 10000}),
  * {@code TOPIC_REPLICATION} / {@code bus.replication} ({@code 1}).
@@ -68,7 +73,7 @@ public final class EngineService implements AutoCloseable {
     /** Creates the topics for {@code symbols} if needed, then recovers and starts every symbol. */
     public static EngineService start(String bootstrap, Collection<String> symbols, Path journalRoot,
             Journal.Options options, int snapshotEvery, int replication, Consumer<Throwable> onFatal) {
-        symbols.forEach(Symbols::requireListed);
+        symbols.forEach(Symbols::requireValid);
         createTopics(bootstrap, symbols, replication);
         return new EngineService(bootstrap, symbols, journalRoot, options, snapshotEvery, onFatal);
     }
@@ -152,8 +157,7 @@ public final class EngineService implements AutoCloseable {
 
     public static void main(String[] args) throws InterruptedException {
         String bootstrap = setting("KAFKA_BOOTSTRAP_SERVERS", "bus.bootstrap", "localhost:9092");
-        List<String> symbols = Arrays.stream(setting("SYMBOLS", "bus.symbols", String.join(",", Symbols.ALL))
-                .split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+        List<String> symbols = hostedSymbols();
         Path journalRoot = Path.of(setting("JOURNAL_PATH", "journal.path", "journal"));
         int snapshotEvery = Integer.parseInt(setting("SNAPSHOT_EVERY", "journal.snapshotEvery", "10000"));
         int replication = Integer.parseInt(setting("TOPIC_REPLICATION", "bus.replication", "1"));
@@ -166,6 +170,23 @@ public final class EngineService implements AutoCloseable {
         }, "shutdown"));
         LOG.info("matching-engine on " + bootstrap + " for " + symbols + ", journal " + journalRoot.toAbsolutePath());
         stopped.await();
+    }
+
+    private static List<String> hostedSymbols() {
+        String explicit = setting("SYMBOLS", "bus.symbols", null);
+        if (explicit != null) {
+            return Arrays.stream(explicit.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+        }
+        String refdata = setting("REFDATA_URL", "refdata.url", null);
+        if (refdata == null) {
+            return Symbols.ALL;
+        }
+        try {
+            return new ReferenceDataClient(URI.create(refdata)).symbols(30, Duration.ofSeconds(1)).stream()
+                    .map(Instrument::symbol).toList();
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot load the listing from " + refdata, e);
+        }
     }
 
     private static String setting(String env, String property, String fallback) {

@@ -1,9 +1,33 @@
-# Event bus (Redpanda, Kafka API) + the standalone matching engine.
+# Brokerage stack: Postgres (system of record) + Flyway migrations, the Redpanda event bus, the standalone matching
+# engine and the TypeScript services.
 #   docker compose up --build
 # Kafka clients on the host use localhost:19092; containers use redpanda:9092.
 name: devin-demo
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: brokerage
+      POSTGRES_USER: brokerage
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brokerage}
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brokerage -d brokerage"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot Flyway job; every service that needs the schema waits for it to complete.
+  db-migrate:
+    image: flyway/flyway:10-alpine
+    command: ["-url=jdbc:postgresql://postgres:5432/brokerage", "-user=brokerage",
+              "-password=${POSTGRES_PASSWORD:-brokerage}", "-connectRetries=10", "migrate"]
+    volumes: ["./db/migrations:/flyway/sql:ro"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
   redpanda:
     image: redpandadata/redpanda:v24.2.18
     command:
@@ -43,15 +67,54 @@ services:
     depends_on:
       redpanda-init:
         condition: service_completed_successfully
+      reference-data-service:
+        condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
-      SYMBOLS: ACME,GLOBX,INITD,NVTA
+      # Hosted symbols come from the reference-data service; set SYMBOLS to override.
+      REFDATA_URL: http://reference-data-service:8082
       JOURNAL_PATH: /data/journal
       SNAPSHOT_EVERY: "10000"
     volumes:
       - engine-journal:/data/journal
     restart: unless-stopped
 
+  auth-service:
+    build: ./services/auth-service
+    environment:
+      DATABASE_URL: postgres://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+      # PKCS#8 PEM; without it each start generates a new signing key and earlier tokens stop verifying.
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+    ports: ["8081:8081"]
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+
+  reference-data-service:
+    build: ./services/reference-data-service
+    environment:
+      DATABASE_URL: postgres://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+    ports: ["8082:8082"]
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+
+  history-writer:
+    build: ./services/history-writer
+    environment:
+      DATABASE_URL: postgres://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+      KAFKA_BROKERS: redpanda:9092
+    # Read API (GET /v1/orders, /v1/trades) for the gateway: HISTORY_URL=http://history-writer:8083
+    ports: ["8083:8083"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8083/healthz"]
+      interval: 5s
+      retries: 20
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+      redpanda: { condition: service_healthy }
+    restart: unless-stopped
+
 volumes:
+  pgdata:
   redpanda-data:
   engine-journal:

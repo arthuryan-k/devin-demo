@@ -64,7 +64,7 @@ public final class SymbolBus implements AutoCloseable {
             int marketDataSnapshotEvery, int inputRingSize, int outputRingSize) {
 
         public Config {
-            Symbols.requireListed(symbol);
+            Symbols.requireValid(symbol);
             Objects.requireNonNull(bootstrapServers, "bootstrapServers");
             Objects.requireNonNull(journal, "journal");
         }

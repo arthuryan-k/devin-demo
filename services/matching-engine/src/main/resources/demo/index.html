@@ -13,6 +13,7 @@
   body { margin: 0; font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
   header { display: flex; align-items: center; gap: 24px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  header h1 .instrument { font-weight: 500; opacity: 0.7; margin-left: 6px; }
   .stat { display: flex; flex-direction: column; }
   .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
   .stat .value { font-size: 18px; font-variant-numeric: tabular-nums; font-weight: 600; }
@@ -81,7 +82,7 @@
 </head>
 <body>
 <header>
-  <h1>Order Book Demo</h1>
+  <h1>Order Book Demo <span id="instrument" class="instrument"></span></h1>
   <div class="stat"><span class="label">Best bid</span><span class="value bid" id="s-bid">–</span></div>
   <div class="stat"><span class="label">Best ask</span><span class="value ask" id="s-ask">–</span></div>
   <div class="stat"><span class="label">Spread</span><span class="value" id="s-spread">–</span></div>
@@ -377,7 +378,18 @@ async function pollAccount() {
     accountPolling = false;
   }
 }
-function startAccountPolling() { pollAccount(); setInterval(pollAccount, 500); }
+// The traded instrument comes from the listing (reference-data service when deployed with it).
+async function loadInstrument() {
+  try {
+    const data = await api("GET", "/api/symbols");
+    const i = data.symbols.find(s => s.symbol === data.traded) || data.symbols[0];
+    if (i) $("instrument").textContent = i.name && i.name !== i.symbol ? i.symbol + " · " + i.name : i.symbol;
+  } catch (err) {
+    logLine("error", "ERROR    listing unavailable: " + err.message, true);
+  }
+}
+
+function startAccountPolling() { loadInstrument(); pollAccount(); setInterval(pollAccount, 500); }
 
 function ticketError(text) { $("ticket-error").textContent = text || ""; }
 

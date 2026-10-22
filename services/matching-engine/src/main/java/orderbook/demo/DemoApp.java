@@ -1,5 +1,6 @@
 package orderbook.demo;
 
+import java.math.BigDecimal;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
@@ -26,7 +27,11 @@ import orderbook.api.AdmissionControl;
 import orderbook.api.ApiException;
 import orderbook.api.ExchangeService;
 import orderbook.api.InProcessExchangeClient;
+import orderbook.api.ParticipantDirectory;
+import orderbook.api.ParticipantRegistry;
+import orderbook.Symbols;
 import orderbook.pipeline.Gateway;
+import orderbook.services.Instrument;
 import orderbook.sim.ClientLoop;
 import orderbook.sim.ExchangeClient.Credentials;
 import orderbook.sim.Simulator;
@@ -53,6 +58,7 @@ final class DemoApp {
     private final ExchangeService exchange;
     private final MarketDataPublisher marketData = new MarketDataPublisher();
     private final Supplier<Account> accountFactory;
+    private final List<Instrument> instruments;
 
     // Confined to the simulator thread.
     private Account account;
@@ -73,8 +79,19 @@ final class DemoApp {
      * until {@link Simulator#connect} points them elsewhere.
      */
     DemoApp(Simulator simulator, Supplier<Account> accountFactory, AdmissionControl.Limits limits, Random keyRandom) {
+        this(simulator, accountFactory, limits, new ParticipantRegistry(keyRandom), builtInInstruments());
+    }
+
+    /**
+     * {@code directory} authenticates callers (in memory, or the auth service when deployed with it) and
+     * {@code instruments} is the listing served by {@code GET /api/symbols} (from the reference-data service, or
+     * {@link #builtInInstruments()}).
+     */
+    DemoApp(Simulator simulator, Supplier<Account> accountFactory, AdmissionControl.Limits limits,
+            ParticipantDirectory directory, List<Instrument> instruments) {
         this.simulator = simulator;
-        this.exchange = new ExchangeService(simulator, limits, keyRandom);
+        this.exchange = new ExchangeService(simulator, limits, directory);
+        this.instruments = List.copyOf(instruments);
         Random accountRandom = new Random(simulator.seed() ^ 0x5DEECE66DL);
         this.accountFactory = accountFactory != null ? accountFactory
                 : () -> Account.withRandomCash(USER, accountRandom, simulator.startingReferenceTicks());
@@ -192,6 +209,9 @@ final class DemoApp {
         if (under(path, "/simulate")) {
             return this::simulate;
         }
+        if (under(path, "/api/symbols")) {
+            return this::symbols;
+        }
         if (under(path, "/participants")) {
             return this::participants;
         }
@@ -221,6 +241,30 @@ final class DemoApp {
         return Reply.ok(simulator.execute(() -> Json.obj("account", accountJson(), "simulation", simulationJson(),
                 "tradeCount", Long.toString(tradeCount), "tradedVolume", Long.toString(tradedVolume),
                 "lastTradePrice", price(account.lastTradePrice()))));
+    }
+
+    /** The listing when no reference-data service is configured: {@link Symbols#ALL}, tick 0.01, lot 1. */
+    static List<Instrument> builtInInstruments() {
+        List<Instrument> out = new ArrayList<>();
+        for (String symbol : Symbols.ALL) {
+            out.add(new Instrument(symbol, symbol, "USD", new BigDecimal("0.01"), 1, BigDecimal.ZERO));
+        }
+        return out;
+    }
+
+    /** {@code GET /api/symbols}: the listing and the symbol this page trades. */
+    private Reply symbols(Call call) {
+        if (!call.method().equals("GET")) {
+            return Reply.error(405, "use GET");
+        }
+        List<String> out = new ArrayList<>();
+        for (Instrument i : instruments) {
+            out.add(Json.obj("symbol", Json.str(i.symbol()), "name", Json.str(i.name()),
+                    "currency", Json.str(i.currency()), "tickSize", Json.str(i.tickSize().toPlainString()),
+                    "lotSize", Integer.toString(i.lotSize())));
+        }
+        return Reply.ok(Json.obj("traded", Json.str(simulator.pipeline().symbol()),
+                "symbols", "[" + String.join(",", out) + "]"));
     }
 
     /** {@code POST /participants/register}: a new participant id and API key ({@code name} labels it). */
