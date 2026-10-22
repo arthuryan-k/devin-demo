@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/arthuryan-k/devin-demo/schemas/bus/marketdata.schema.json",
+  "title": "marketdata.<symbol> record value",
+  "description": "The SSE market-data messages of ARCHITECTURE.md, one per record. Each engine start publishes a snapshot (seq = last applied seq), then one delta per seq, contiguous; a fresh snapshot every 1000 seqs lets a consumer resync after retention truncates the log. Key = symbol; one partition. Prices in ticks.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type", "seq", "bids", "asks", "trades", "events"],
+      "properties": {
+        "type": {"const": "snapshot"},
+        "seq": {"type": "integer", "description": "Last seq applied; -1 before the first command."},
+        "reason": {"type": "string"},
+        "bids": {"$ref": "#/$defs/levels", "description": "Best (highest) first."},
+        "asks": {"$ref": "#/$defs/levels", "description": "Best (lowest) first."},
+        "trades": {"type": "array", "description": "Recent trades, as in the SSE snapshot (may be empty after a restart)."},
+        "events": {"type": "array", "description": "Recent events, as in the SSE snapshot (may be empty after a restart)."}
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "seq", "levels", "events"],
+      "properties": {
+        "type": {"const": "delta"},
+        "seq": {"type": "integer"},
+        "levels": {"type": "array", "items": {"type": "array", "prefixItems": [{"enum": ["a", "u", "r"], "description": "add / update / remove"}, {"enum": ["B", "S"]}, {"type": "integer", "description": "price"}, {"type": "integer", "description": "total qty"}, {"type": "integer", "description": "order count"}], "minItems": 5, "maxItems": 5}},
+        "events": {"type": "array"}
+      }
+    }
+  ],
+  "$defs": {
+    "levels": {"type": "array", "items": {"type": "array", "prefixItems": [{"type": "integer", "description": "price"}, {"type": "integer", "description": "qty"}, {"type": "integer", "description": "orders"}], "minItems": 3, "maxItems": 3}}
+  }
+}

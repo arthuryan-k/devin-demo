@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/arthuryan-k/devin-demo/schemas/bus/events.schema.json",
+  "title": "events.<symbol> record value",
+  "description": "Exactly one record per sequenced command, in seq order (seq is contiguous per symbol, starting at 0). Record key = symbol; one partition. Published only after the command is in the engine's local journal. Prices are integer ticks.",
+  "type": "object",
+  "required": ["v", "symbol", "seq", "participantId", "correlationId", "ts", "commandOffset", "command", "events"],
+  "additionalProperties": false,
+  "properties": {
+    "v": {"const": 1},
+    "symbol": {"type": "string"},
+    "seq": {"type": "integer", "minimum": 0, "description": "The engine's global sequence for this symbol."},
+    "participantId": {"type": "integer"},
+    "correlationId": {"type": ["string", "null"], "description": "Echoed from the command; null if it had none."},
+    "ts": {"type": "integer", "description": "Epoch milliseconds when the engine published the record (wall clock; not part of matching)."},
+    "commandOffset": {"type": "integer", "description": "Offset of the source record in commands.<symbol>, partition 0."},
+    "command": {"type": "object", "description": "The command as sequenced, in commands.schema.json form without participantId/correlationId; Place always carries its orderId (engine-assigned if the client omitted it)."},
+    "events": {"type": "array", "items": {"$ref": "#/$defs/event"}, "description": "In engine order: OrderPlaced before its trades."}
+  },
+  "$defs": {
+    "side": {"enum": ["BUY", "SELL"]},
+    "event": {
+      "type": "object",
+      "required": ["type", "seq"],
+      "properties": {"seq": {"type": "integer", "description": "Same as the envelope seq."}},
+      "oneOf": [
+        {"properties": {"type": {"const": "OrderPlaced"}, "orderId": {"type": "integer"}, "side": {"$ref": "#/$defs/side"}, "orderType": {"enum": ["LIMIT", "MARKET"]}, "timeInForce": {"enum": ["GTC", "IOC", "FOK"]}, "price": {"type": "integer", "description": "0 for MARKET"}, "qty": {"type": "integer"}, "seqNum": {"type": "integer", "description": "Time-priority sequence"}}, "required": ["orderId", "side", "orderType", "timeInForce", "price", "qty", "seqNum"]},
+        {"properties": {"type": {"const": "TradeExecuted"}, "makerOrderId": {"type": "integer"}, "takerOrderId": {"type": "integer"}, "makerParticipantId": {"type": "integer"}, "takerParticipantId": {"type": "integer"}, "takerSide": {"$ref": "#/$defs/side"}, "price": {"type": "integer"}, "qty": {"type": "integer"}}, "required": ["makerOrderId", "takerOrderId", "makerParticipantId", "takerParticipantId", "takerSide", "price", "qty"]},
+        {"properties": {"type": {"const": "OrderCancelled"}, "orderId": {"type": "integer"}, "cancelledQty": {"type": "integer"}, "reason": {"enum": ["REQUESTED", "UNFILLED_REMAINDER", "SELF_TRADE_PREVENTION"]}}, "required": ["orderId", "cancelledQty", "reason"]},
+        {"properties": {"type": {"const": "OrderAmended"}, "orderId": {"type": "integer"}, "oldPrice": {"type": "integer"}, "newPrice": {"type": "integer"}, "oldQty": {"type": "integer"}, "newQty": {"type": "integer"}, "seqNum": {"type": "integer"}, "priorityRetained": {"type": "boolean"}}, "required": ["orderId", "oldPrice", "newPrice", "oldQty", "newQty", "seqNum", "priorityRetained"]},
+        {"properties": {"type": {"const": "OrderRejected"}, "orderId": {"type": "integer"}, "reason": {"type": "string", "description": "orderbook.Event.OrderRejected.Reason, e.g. DUPLICATE_ORDER_ID, UNKNOWN_ORDER_ID, NON_POSITIVE_PRICE, FOK_NOT_FILLABLE"}}, "required": ["orderId", "reason"]}
+      ]
+    }
+  }
+}

@@ -3,7 +3,7 @@
 [Back to README](README.md)
 
 Internals of the matching engine service (`services/matching-engine/`): the per-symbol exchange core, the Disruptor
-pipeline, the participant API, the market-data feed and the market simulator.
+pipeline, the event bus, the participant API, the market-data feed and the market simulator.
 
 ## Matching engine
 
@@ -125,6 +125,98 @@ flowchart LR
   thread with its own cursor: the journal writer, the market-data publisher, the response router (completes the
   waiting HTTP caller's `CompletableFuture`, keyed by sequence) and the simulator's read model. A slow handler
   only falls behind. Matching waits only once a handler lags by a whole output ring, and producers then see `BUSY`.
+
+## Event bus
+
+Between services, the matching engine talks over a Kafka-compatible event bus
+([Redpanda](https://redpanda.com/), single broker, `docker-compose.yml` at the repo root). The standalone service
+`orderbook.bus.EngineService` (image built from `services/matching-engine/Dockerfile`) runs one `SymbolBus` per
+listed symbol: it consumes `commands.<symbol>`, feeds that symbol's Disruptor input ring and publishes the output
+ring to `events.<symbol>` and `marketdata.<symbol>`. The bus is the transport; each symbol's journal stays the local
+durable log. (The in-process demo server, `DemoServer`, still feeds the rings directly.)
+
+### Topics
+
+| Topic | Producer → consumer | Record value | Retention |
+|---|---|---|---|
+| `commands.<symbol>` | gateway / clients → matching engine | one Place, Cancel or Amend ([`commands.schema.json`](schemas/bus/commands.schema.json)) | forever |
+| `events.<symbol>` | matching engine → gateway, history writer, … | one record per sequenced command: `seq`, `participantId`, echoed `correlationId`, `ts`, `commandOffset`, the `command` and its `events` array ([`events.schema.json`](schemas/bus/events.schema.json)) | forever |
+| `marketdata.<symbol>` | matching engine → market-data consumers | the [Market data](#market-data) snapshot / delta messages ([`marketdata.schema.json`](schemas/bus/marketdata.schema.json)) | 24 h |
+| `commands.<symbol>.dlq` | matching engine → operators | command records that failed to decode, unchanged, with `error` and `source.offset` headers | default |
+
+- **Encoding:** JSON (UTF-8), JSON Schema 2020-12 files in [`schemas/bus/`](schemas/bus/), schema version `v: 1`.
+  JSON keeps the wire format readable with `rpk` and consumable from any language without generated code; the codec
+  (`orderbook.bus.BusCodec`) rejects unknown fields so a typo fails loudly rather than being ignored. Prices are
+  integer ticks (100 = 1.00), quantities integers, enums upper-case strings.
+- **Partitioning and ordering:** every topic has exactly one partition and records are keyed by symbol, so each
+  symbol's commands, events and market data are each totally ordered. The engine creates its topics at startup and
+  refuses to run if one has more than one partition; compose disables auto-creation.
+- **Correlation:** `correlationId` is an optional opaque string on a command, echoed unchanged (or `null`) on that
+  command's events record together with `participantId` and `seq`, so a gateway can do request/response over the bus.
+- **Order ids:** a client-supplied `orderId` on Place is kept; a reused one is rejected with `DUPLICATE_ORDER_ID`.
+  When absent the engine assigns one, striped by symbol (`id % 16` = listing index + 1) so ids stay unique
+  exchange-wide while each symbol derives its next id from its own state.
+- **Invalid commands** go to `commands.<symbol>.dlq` and consume no `seq`. Commands the engine rejects
+  (unknown order, bad price, …) are sequenced and published like any other, with an `OrderRejected` event.
+
+```mermaid
+flowchart LR
+    GW["Gateway / clients"] -- "Place / Cancel / Amend<br/>key = symbol" --> CMD["commands.SYMBOL<br/>1 partition"]
+    CMD --> ING["SymbolBus ingress<br/>1 consumer thread per symbol<br/>only producer of the ring"]
+    ING -- "malformed" --> DLQ["commands.SYMBOL.dlq"]
+    ING --> IN["Input ring"]
+    IN --> ENG["Engine<br/>1 thread"]
+    ENG --> OUT["Output ring"]
+    OUT --> J["Journal<br/>local durable log + snapshots"]
+    OUT --> EV["Events publisher<br/>waits for the journal"]
+    OUT --> MD["MarketDataPublisher"]
+    EV --> EVT["events.SYMBOL<br/>1 partition"]
+    MD --> MDT["marketdata.SYMBOL<br/>1 partition"]
+    EVT --> C1["Gateway responses"]
+    EVT --> C2["History writer"]
+    MDT --> C3["Market-data consumers"]
+```
+
+### Single writer and sequencing
+
+One consumer thread per symbol reads `commands.<symbol>` partition 0 and is the only producer of that symbol's input
+ring, so ring order is topic order and each command gets the next global `seq` (contiguous from 0, continuing across
+restarts). A full input ring is backpressure: the consumer waits for a slot instead of rejecting with `BUSY`. The
+output ring fans out to three independent consumers: the journal writer, the events publisher and the market-data
+publisher. The events publisher sends a command's record only after the journal has written it, through one
+idempotent producer (`acks=all`); consumer offsets on `commands.<symbol>` are committed once events are acknowledged
+(informational: recovery does not rely on them).
+
+### Restart and recovery
+
+The engine is crash-only: any bus or journal error exits the process, and a restart recovers. At startup each symbol:
+
+1. reads the last `events.<symbol>` record (seq `P`, and its `commandOffset`) and the journal's last seq `J`;
+2. rebuilds the engine as of `R = min(P, J)` from the journal (`Journal.load(R)`: newest snapshot at or before
+   `R`, plus the entries after it) and starts a pipeline whose first seq is `R + 1`;
+3. resumes consuming `commands.<symbol>` right after the command sequenced at `R` (the `commandOffset` of the
+   events record for `R`).
+
+Commands are re-processed deterministically, so for seqs up to `J` the re-derived command is checked against the
+journal instead of re-journaled (a mismatch is fatal), and seqs up to `P` are not re-published. Every seq therefore
+reaches `events.<symbol>` exactly once, in order, whether the engine crashed before journaling, after journaling but
+before publishing, or lost its journal entirely (then `R = -1` and the journal is rebuilt from the retained
+commands topic). `marketdata.<symbol>` starts each run with a snapshot as of `R` and then one delta per seq; a fresh
+snapshot every 1000 seqs lets a consumer resync after retention truncates the topic.
+
+### Running it
+
+```
+docker compose up --build                 # Redpanda + matching engine (journal in the engine-journal volume)
+docker compose exec redpanda rpk topic produce commands.ACME -k ACME
+{"type":"Place","participantId":7,"correlationId":"c-1","side":"SELL","price":10000,"qty":5}
+docker compose exec redpanda rpk topic consume events.ACME
+```
+
+Host clients use `localhost:19092`. Configuration (environment): `KAFKA_BOOTSTRAP_SERVERS`, `SYMBOLS`,
+`JOURNAL_PATH`, `SNAPSHOT_EVERY`, `TOPIC_REPLICATION`. `MatchingEngineBusIT` (Testcontainers Redpanda, run by
+`mvn verify`) publishes to `commands.ACME`, consumes `events.ACME` and checks matching, `seq` order, correlation,
+the DLQ, market data, restart without republishing, and rebuilding a lost journal from the bus.
 
 ## Participant API
 
