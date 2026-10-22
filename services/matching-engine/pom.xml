@@ -17,7 +17,6 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <junit.version>5.11.4</junit.version>
         <jqwik.version>1.9.2</jqwik.version>
-        <jetty.version>12.1.14</jetty.version>
         <kafka.version>3.9.1</kafka.version>
         <jackson.version>2.19.4</jackson.version>
         <testcontainers.version>2.0.5</testcontainers.version>
@@ -40,11 +39,6 @@
             <groupId>com.lmax</groupId>
             <artifactId>disruptor</artifactId>
             <version>4.0.0</version>
-        </dependency>
-        <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-server</artifactId>
-            <version>${jetty.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.kafka</groupId>
@@ -124,7 +118,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>orderbook.demo.DemoServer</mainClass>
+                    <mainClass>orderbook.bus.EngineService</mainClass>
                 </configuration>
             </plugin>
         </plugins>
