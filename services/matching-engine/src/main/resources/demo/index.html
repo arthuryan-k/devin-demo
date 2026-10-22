@@ -129,20 +129,8 @@
     </section>
     <section class="panel">
       <h2>Balance sheet (<span class="you">YOU</span>)</h2>
-      <dl class="sheet">
-        <dt>Available cash</dt><dd id="b-avail">–</dd>
-        <dt>Reserved cash</dt><dd id="b-rcash">–</dd>
-        <dt>Total cash</dt><dd id="b-cash">–</dd>
-        <dt>Shares owned</dt><dd id="b-shares">–</dd>
-        <dt>Reserved shares</dt><dd id="b-rshares">–</dd>
-        <dt>Avg cost / share</dt><dd id="b-avg">–</dd>
-        <dt>Mark price (last trade)</dt><dd id="b-mark">–</dd>
-        <dt class="total">Mark-to-market equity</dt><dd class="total" id="b-equity">–</dd>
-        <dt class="total">Session gain / loss</dt><dd class="total" id="b-pnl">–</dd>
-        <dt>Realized</dt><dd id="b-realized">–</dd>
-        <dt>Unrealized</dt><dd id="b-unrealized">–</dd>
-        <dt>Return on starting cash</dt><dd id="b-ret">–</dd>
-      </dl>
+      <div class="empty">Cash, positions and P&amp;L are kept by the portfolio service, and limits are enforced by the
+        risk service before an order reaches the engine. This standalone demo doesn't run them.</div>
     </section>
   </div>
 
@@ -154,8 +142,8 @@
       <label for="rate" style="margin:0">Rate</label>
       <input id="rate" type="range" min="1" max="20" step="1" value="5">
       <span id="rate-label">5 /sec</span>
-      <span id="sim-seed"></span><span id="conn" title="Market data: live SSE stream (/marketdata/stream); account state is polled">connecting</span>
-      <button type="button" class="small" id="reset" title="Stop the simulation and start over with an empty engine and a fresh account">Reset</button>
+      <span id="sim-seed"></span><span id="conn" title="Market data: live SSE stream (/marketdata/stream); your open orders are polled">connecting</span>
+      <button type="button" class="small" id="reset" title="Stop the simulation and start over with an empty engine">Reset</button>
     </div>
     <div class="sim-bar" id="participants"></div>
     <h2>Book depth — one bar per price level, one segment per resting order (FIFO bottom → top). Levels holding YOUR orders are outlined.</h2>
@@ -273,7 +261,7 @@ function clearForReset() {
   $("log").replaceChildren();
   for (const list of Object.values(priceHistory)) list.length = 0;
   pview = null;
-  logLine("", "RESET    engine cleared, new account");
+  logLine("", "RESET    engine cleared");
 }
 
 // Stream messages carry integer ticks; the page works in decimal prices.
@@ -363,7 +351,7 @@ function connectEmbedded() {
   embedded.connect(onStreamMessage);
 }
 
-// Account, simulation status and tape counters are polled; the book never is.
+// Open orders, simulation status and tape counters are polled; the book never is.
 let accountPolling = false;
 async function pollAccount() {
   if (accountPolling) return;
@@ -443,7 +431,7 @@ function stepTweens(dt) {
 }
 
 function renderNumbers() {
-  const s = model.stats, a = model.account;
+  const s = model.stats;
   setNumber("s-bid", s.bestBid, 2);
   setNumber("s-ask", s.bestAsk, 2);
   setNumber("s-spread", s.spread, 2);
@@ -451,18 +439,6 @@ function renderNumbers() {
   setNumber("s-resting", s.restingOrders, 0);
   setNumber("s-trades", s.tradeCount, 0);
   setNumber("s-volume", s.tradedVolume, 0);
-  setNumber("b-avail", a.availableCash, 2);
-  setNumber("b-rcash", a.reservedCash, 2);
-  setNumber("b-cash", a.cash, 2);
-  setNumber("b-shares", a.sharesOwned, 0);
-  setNumber("b-rshares", a.reservedShares, 0);
-  setNumber("b-mark", a.markPrice, 2);
-  setNumber("b-equity", a.equity, 2);
-  setNumber("b-avg", a.avgCost, 2);
-  setNumber("b-pnl", a.sessionPnl, 2, true);
-  setNumber("b-realized", a.realizedPnl, 2, true);
-  setNumber("b-unrealized", a.unrealizedPnl, 2, true);
-  setNumber("b-ret", Number(a.startingCash) > 0 ? 100 * a.sessionPnl / a.startingCash : 0, 2, "%");
 }
 
 let lastParticipants = "";

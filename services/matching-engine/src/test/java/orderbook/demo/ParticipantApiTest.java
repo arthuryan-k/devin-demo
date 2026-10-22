@@ -45,8 +45,7 @@ class ParticipantApiTest {
     private final HttpClient http = HttpClient.newHttpClient();
 
     private DemoServer start(AdmissionControl.Limits limits) throws Exception {
-        server = new DemoServer(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), new Simulator(7),
-                () -> new Account(DemoServer.USER, 10_000_00, 100), limits);
+        server = new DemoServer(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), new Simulator(7), limits);
         server.start();
         return server;
     }

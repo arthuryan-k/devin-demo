@@ -81,24 +81,12 @@ class DisruptorPipelineTest {
     void fullRingRejectsWithBusyInsteadOfBlocking() throws Exception {
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger delivered = new AtomicInteger();
-        AtomicInteger unpublished = new AtomicInteger();
         try (DisruptorPipeline pipeline = new DisruptorPipeline(4, 4)) {
             pipeline.addConsumer((r, eob) -> {
                 release.await();
                 delivered.incrementAndGet();
             });
             Gateway gateway = new Gateway(pipeline);
-            gateway.setRiskCheck(1, new Gateway.RiskCheck() {
-                @Override
-                public Gateway.Rejection admit(Command command) {
-                    return null;
-                }
-
-                @Override
-                public void unpublished(Command command, Event.OrderRejected busy) {
-                    unpublished.incrementAndGet();
-                }
-            });
             int published = 0;
             Gateway.Submission busy = null;
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
@@ -114,7 +102,6 @@ class DisruptorPipelineTest {
             }
             assertTrue(busy != null, "a stalled pipeline must eventually report BUSY");
             assertEquals(Event.OrderRejected.Reason.BUSY, busy.busy().reason());
-            assertEquals(1, unpublished.get(), "the risk check releases the rejected command's reservation");
             assertTrue(published >= 4 && published <= 4 + 4 + 2, "about two rings plus in-flight: " + published);
             release.countDown();
             int expected = published;

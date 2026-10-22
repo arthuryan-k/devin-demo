@@ -103,7 +103,7 @@ diagram shows one symbol's pipeline; every symbol has an identical, independent 
 flowchart LR
     HTTP["HTTP order / cancel / amend"] --> GW
     SIM["Simulator (personas)"] --> GW
-    GW["Gateway<br/>auth + admission control<br/>account reservation check<br/>full ring: BUSY"] -- "tryPublishEvent" --> IN
+    GW["Gateway<br/>auth + admission control<br/>full ring: BUSY"] -- "tryPublishEvent" --> IN
     IN["Input ring<br/>CommandEvent<br/>slot seq = global seqNum"] --> ENG
     ENG["Engine<br/>1 thread, matching only"] --> OUT
     OUT["Output ring<br/>ResultEvent, same seq"] --> J["JournalHandler<br/>journal + snapshots"]
@@ -116,7 +116,7 @@ flowchart LR
 
 - **Input ring (sequencer):** a preallocated, power-of-two `CommandEvent` ring with multiple producers. Every API
   call (browser, external clients and simulated participants alike) is authenticated and admission-checked first
-  (see [Participant API](#participant-api)), then `Gateway` runs the user's account reservation check and claims a
+  (see [Participant API](#participant-api)), then `Gateway` claims a
   slot with `tryPublishEvent()`. The slot's sequence is the command's `seqNum` within that symbol.
 - **Backpressure:** a full ring never blocks a producer; the command is rejected with `OrderRejected` reason
   `BUSY` and its reservation is released.
@@ -325,7 +325,7 @@ Endpoints and an example are in the [README](README.md#participant-api).
   and may have at most 100 open orders. A breach gets `429` with reason `RATE_LIMITED` or `MAX_OPEN_ORDERS`.
 - **Blocking:** after 100 violations a participant gets `403 BLOCKED` on every call. `POST /api/reset` clears
   the counters.
-- Responses carry the order ID, the global `seq` and the engine's events. `YOU` also gets its book and account view.
+- Responses carry the order ID, the global `seq` and the engine's events. `YOU` also gets its book and open orders.
 
 ## Market data
 
@@ -339,7 +339,7 @@ Endpoints and an example are in the [README](README.md#participant-api).
 that applies results, so there is no snapshot/subscribe race. After snapshot `S`, deltas arrive as `S+1`, `S+2`, …
 with no holes. Any other sequence is a gap, and the client resyncs from a fresh snapshot. A slow client's backlog
 is replaced by a single snapshot. The page keeps a local book replica from the snapshot plus deltas, and the
-event log and trade tape filter the same stream. Account state is polled from `GET /api/account`.
+event log and trade tape filter the same stream. YOU's open orders are polled from `GET /api/account`.
 
 ## Market simulator
 
@@ -355,9 +355,10 @@ registers through `POST /participants/register` and trades over HTTP with its ow
 
 ## Your account (`YOU`)
 
-Every order from `YOU` is checked against its cash and share balance before it reaches the engine (the `Gateway`
-account reservation check above). Buys reserve cash and sells reserve shares until the order fills or is cancelled;
-fills settle at the trade price, and any unused reservation is refunded.
+The engine keeps no balances. Cash, positions, reservations and P&L belong to the portfolio service, and the
+pre-trade reservation check is the risk service, which the external gateway calls before a command reaches the
+engine. In this standalone demo, `YOU`'s orders are not limited by a balance; `GET /api/account` lists its resting
+orders, read off the book.
 
 ## Portfolio and risk services
 

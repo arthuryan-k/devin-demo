@@ -11,7 +11,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Random;
-import java.util.function.Supplier;
 
 import orderbook.Command;
 import orderbook.Event;
@@ -37,9 +36,8 @@ import orderbook.sim.ExchangeClient.Credentials;
 import orderbook.sim.Simulator;
 
 /**
- * The demo backend without any transport: JSON API, the user's {@link Account} (the gateway's pre-trade check for
- * the user) and the {@link MarketDataPublisher} stream. Hosted by {@link DemoServer} on Jetty, or compiled to
- * JavaScript and run in the browser. Account and feed state are confined to the simulator's loop; HTTP threads only
+ * The demo backend without any transport: JSON API and the {@link MarketDataPublisher} stream. Hosted by {@link DemoServer} on Jetty, or compiled to
+ * JavaScript and run in the browser. Feed state is confined to the simulator's loop; HTTP threads only
  * wait for their command's result off the loop.
  */
 final class DemoApp {
@@ -57,20 +55,18 @@ final class DemoApp {
     private final Simulator simulator;
     private final ExchangeService exchange;
     private final MarketDataPublisher marketData = new MarketDataPublisher();
-    private final Supplier<Account> accountFactory;
     private final List<Instrument> instruments;
 
     // Confined to the simulator thread.
-    private Account account;
+    private OptionalLong lastTradePrice = OptionalLong.empty();
     private final ArrayDeque<String> trades = new ArrayDeque<>();
     private long tradeCount;
     private long tradedVolume;
     private final ArrayDeque<FeedEntry> feed = new ArrayDeque<>();
     private long feedSeq;
 
-    /** {@code accountFactory} builds the user's account at startup and on reset; null for a random starting cash. */
-    DemoApp(Simulator simulator, Supplier<Account> accountFactory) {
-        this(simulator, accountFactory, AdmissionControl.Limits.DEFAULT, new Random());
+    DemoApp(Simulator simulator) {
+        this(simulator, AdmissionControl.Limits.DEFAULT, new Random());
     }
 
     /**
@@ -78,8 +74,8 @@ final class DemoApp {
      * {@code SecureRandom} when serving real clients). Simulated participants trade through the in-process client
      * until {@link Simulator#connect} points them elsewhere.
      */
-    DemoApp(Simulator simulator, Supplier<Account> accountFactory, AdmissionControl.Limits limits, Random keyRandom) {
-        this(simulator, accountFactory, limits, new ParticipantRegistry(keyRandom), builtInInstruments());
+    DemoApp(Simulator simulator, AdmissionControl.Limits limits, Random keyRandom) {
+        this(simulator, limits, new ParticipantRegistry(keyRandom), builtInInstruments());
     }
 
     /**
@@ -87,19 +83,14 @@ final class DemoApp {
      * {@code instruments} is the listing served by {@code GET /api/symbols} (from the reference-data service, or
      * {@link #builtInInstruments()}).
      */
-    DemoApp(Simulator simulator, Supplier<Account> accountFactory, AdmissionControl.Limits limits,
+    DemoApp(Simulator simulator, AdmissionControl.Limits limits,
             ParticipantDirectory directory, List<Instrument> instruments) {
         this.simulator = simulator;
         this.exchange = new ExchangeService(simulator, limits, directory);
         this.instruments = List.copyOf(instruments);
-        Random accountRandom = new Random(simulator.seed() ^ 0x5DEECE66DL);
-        this.accountFactory = accountFactory != null ? accountFactory
-                : () -> Account.withRandomCash(USER, accountRandom, simulator.startingReferenceTicks());
-        simulator.run(() -> account = this.accountFactory.get());
         marketData.setLabels(exchange::label);
         simulator.connect(new InProcessExchangeClient(exchange), ClientLoop.INLINE);
         simulator.pipeline().addConsumer(marketData);
-        simulator.gateway().setRiskCheck(USER, new AccountCheck());
         simulator.addListener(this::onCommand);
     }
 
@@ -111,21 +102,6 @@ final class DemoApp {
 
     MarketDataPublisher marketData() {
         return marketData;
-    }
-
-    /** The user's reservations, checked before the command is published; runs on the simulator thread. */
-    private final class AccountCheck implements Gateway.RiskCheck {
-        @Override
-        public Gateway.Rejection admit(Command command) {
-            return account.admit(command, simulator.engine().book())
-                    .map(r -> new Gateway.Rejection(r.orderId(), r.reason().name(), r.message()))
-                    .orElse(null);
-        }
-
-        @Override
-        public void unpublished(Command command, Event.OrderRejected busy) {
-            account.onEvents(List.of(busy));
-        }
     }
 
     Simulator simulator() {
@@ -240,7 +216,7 @@ final class DemoApp {
         }
         return Reply.ok(simulator.execute(() -> Json.obj("account", accountJson(), "simulation", simulationJson(),
                 "tradeCount", Long.toString(tradeCount), "tradedVolume", Long.toString(tradedVolume),
-                "lastTradePrice", price(account.lastTradePrice()))));
+                "lastTradePrice", price(lastTradePrice))));
     }
 
     /** The listing when no reference-data service is configured: {@link Symbols#ALL}, tick 0.01, lot 1. */
@@ -325,7 +301,7 @@ final class DemoApp {
     }
 
     /**
-     * The engine's (or the user's account check's) answer; the user also gets the refreshed book and account, which
+     * The engine's (or the exchange service's) answer; the user also gets the refreshed book and open orders, which
      * reflect the command because the service waited for the replica to apply it.
      */
     private Reply reply(Credentials who, ExchangeService.Outcome outcome) {
@@ -358,7 +334,7 @@ final class DemoApp {
         simulator.reset();
         exchange.admission().reset();
         return Reply.ok(simulator.execute(() -> {
-            account = accountFactory.get();
+            lastTradePrice = OptionalLong.empty();
             trades.clear();
             tradeCount = 0;
             tradedVolume = 0;
@@ -399,12 +375,12 @@ final class DemoApp {
 
     // ---- event feed -----------------------------------------------------------------------------------------------
 
-    /** Simulator listener: settles the account and records trades and events for every command. */
+    /** Simulator listener: records trades and events for every command. */
     private void onCommand(long participantId, Command command, List<Event> events) {
-        account.onEvents(events);
         for (Event event : events) {
             if (event instanceof Event.TradeExecuted executed) {
                 Trade t = executed.trade();
+                lastTradePrice = OptionalLong.of(t.price());
                 tradeCount++;
                 tradedVolume += t.qty();
                 String json = "{\"n\":" + tradeCount + "," + tradeJson(t).substring(1);
@@ -450,7 +426,7 @@ final class DemoApp {
                 "bestBid", price(bid),
                 "bestAsk", price(ask),
                 "spread", bid.isPresent() && ask.isPresent() ? Ticks.format(ask.getAsLong() - bid.getAsLong()) : "null",
-                "lastTradePrice", price(account.lastTradePrice()),
+                "lastTradePrice", price(lastTradePrice),
                 "bids", levelsJson(book.orders(Side.BUY)),
                 "asks", levelsJson(book.orders(Side.SELL)),
                 "restingOrders", Integer.toString(book.size()),
@@ -466,30 +442,20 @@ final class DemoApp {
 
 
 
+    /** YOU's resting orders, read off the book; balances and P&L live in the portfolio service. */
     private String accountJson() {
         List<String> orders = new ArrayList<>();
-        for (Account.OpenOrder o : account.openOrders()) {
-            orders.add(Json.obj("id", Long.toString(o.id()), "side", Json.str(o.side().name()),
-                    "type", Json.str(o.type().name()), "timeInForce", Json.str(o.timeInForce().name()),
-                    "price", o.type() == OrderType.MARKET ? "null" : Ticks.format(o.price()),
-                    "qty", Long.toString(o.qty()), "reservedCash", Ticks.format(o.reservedCash())));
+        OrderBook book = simulator.engine().book();
+        for (Side side : Side.values()) {
+            for (Order o : book.orders(side)) {
+                if (o.participantId() == USER) {
+                    orders.add(Json.obj("id", Long.toString(o.id()), "side", Json.str(o.side().name()),
+                            "type", Json.str(o.type().name()), "timeInForce", Json.str(o.timeInForce().name()),
+                            "price", Ticks.format(o.price()), "qty", Long.toString(o.qtyRemaining())));
+                }
+            }
         }
-        return Json.obj(
-                "participant", Json.str(Simulator.USER_LABEL),
-                "cash", Ticks.format(account.cash()),
-                "reservedCash", Ticks.format(account.reservedCash()),
-                "availableCash", Ticks.format(account.availableCash()),
-                "sharesOwned", Long.toString(account.sharesOwned()),
-                "reservedShares", Long.toString(account.reservedShares()),
-                "availableShares", Long.toString(account.availableShares()),
-                "markPrice", price(account.lastTradePrice()),
-                "equity", Ticks.format(account.equity()),
-                "startingCash", Ticks.format(account.startingCash()),
-                "avgCost", price(account.averageCost()),
-                "realizedPnl", Ticks.format(account.realizedPnl()),
-                "unrealizedPnl", Ticks.format(account.unrealizedPnl()),
-                "sessionPnl", Ticks.format(account.sessionPnl()),
-                "openOrders", Json.array(orders));
+        return Json.obj("participant", Json.str(Simulator.USER_LABEL), "openOrders", Json.array(orders));
     }
 
     private String simulationJson() {
