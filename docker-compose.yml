@@ -136,6 +136,41 @@ services:
     depends_on:
       db-migrate: { condition: service_completed_successfully }
 
+  market-data:
+    build: ./services/market-data
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      REFERENCE_DATA_URL: http://reference-data-service:8082
+    ports: ["8090:8090"]
+    depends_on:
+      redpanda-init: { condition: service_completed_successfully }
+      reference-data-service: { condition: service_healthy }
+    restart: unless-stopped
+
+  # The single public entry point: REST, auth proxy and the market-data WebSocket proxy.
+  gateway:
+    build: ./services/gateway
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      AUTH_URL: http://auth-service:8081
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      RISK_URL: http://risk:8000
+      REFERENCE_DATA_URL: http://reference-data-service:8082
+      MARKET_DATA_URL: http://market-data:8090
+      PORTFOLIO_URL: http://portfolio:8000
+      HISTORY_URL: http://history-writer:8083
+      UPSTREAMS: /api/reference=http://reference-data-service:8082/
+    ports: ["8080:8080"]
+    depends_on:
+      redpanda-init: { condition: service_completed_successfully }
+      auth-service: { condition: service_started }
+      risk: { condition: service_started }
+      portfolio: { condition: service_started }
+      reference-data-service: { condition: service_healthy }
+      market-data: { condition: service_started }
+      history-writer: { condition: service_healthy }
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redpanda-data:
