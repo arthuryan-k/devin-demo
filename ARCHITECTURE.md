@@ -2,13 +2,14 @@
 
 [Back to README](README.md)
 
-Internals of the matching engine, the Disruptor pipeline, the participant API, the market-data feed and the market
-simulator.
+Internals of the matching engine service (`services/matching-engine/`): the per-symbol exchange core, the Disruptor
+pipeline, the participant API, the market-data feed and the market simulator.
 
 ## Matching engine
 
-A single-instrument, in-memory matching engine (`orderbook.MatchingEngine`, `orderbook.OrderBook`). It is
-deterministic and single-threaded, uses integer prices (ticks) and quantities, and never uses floating point.
+An in-memory matching engine for one symbol (`orderbook.MatchingEngine`, `orderbook.OrderBook`). It is
+deterministic and single-threaded, uses integer prices (ticks) and quantities, and never uses floating point. A new
+engine is empty: no resting orders, no last or reference price; prices are discovered only from incoming flow.
 
 - **Commands:** `Place`, `Cancel` and `Amend` all go through `MatchingEngine.process(Command)` and produce events:
   `OrderPlaced`, `TradeExecuted`, `OrderCancelled`, `OrderAmended`, `OrderRejected`.
@@ -24,18 +25,58 @@ deterministic and single-threaded, uses integer prices (ticks) and quantities, a
 - **Self-trade prevention:** cancel-taker. An incoming order that would match the same participant's resting order is
   cancelled, and the resting order is left alone.
 - **Validation:** invalid input is returned as `OrderRejected` events and never thrown. This covers non-positive
-  price or quantity, duplicate order IDs, and unknown order IDs.
+  price or quantity, duplicate order IDs, and unknown order IDs. A command for another symbol is rejected with
+  `WRONG_SYMBOL` before it touches the book (cannot happen behind the router).
 
 The book stores each side as a `TreeMap` of price levels with a FIFO queue per level, plus a hash index for O(1) cancels.
 
+## Symbols and the exchange core
+
+One engine process hosts every listed symbol, each with its own matching engine, pipeline and journal (as IBKR runs
+one book per instrument). Symbols are a fixed set in `orderbook.Symbols`: `ACME`, `GLOBX`, `INITD`, `NVTA`.
+
+- **Symbol on every command:** `Order` carries a `symbol`, and `Command` exposes `symbol()` (`Place` takes the
+  order's, `Cancel(symbol, orderId)`, `Amend(symbol, orderId, newPrice, newQty)`). Constructors without a symbol
+  default to `Symbols.DEFAULT` (`ACME`), so single-symbol callers and tests are unchanged.
+- **`ExchangeCore`** (`orderbook.exchange`) owns a `Map<String, SymbolEngine>` built at startup. A `SymbolEngine`
+  bundles one symbol's `Pipeline` (own input ring, engine thread, output ring and consumers), its `Gateway` and its
+  `Journal`. `ExchangeCore.submit` routes by `command.symbol()`; an unlisted symbol is rejected with
+  `UNKNOWN_SYMBOL` before reaching any ring. Responses are awaited on that symbol's pipeline
+  (`awaitResponse(symbol, seq, timeout)`).
+- **Isolation:** symbols share no book, sequence, thread or lock, so an `ACME` order can never match a `GLOBX`
+  order, and a burst on one symbol only backs up its own ring (`BUSY` stays per symbol). `seq`/`seqNum` are per
+  symbol. The only shared state is the order-id counter (all gateways share one `AtomicLong`), keeping order ids
+  unique exchange-wide.
+- **Today's wiring:** `DemoServer` builds an `ExchangeCore` for all four symbols. The simulator, the browser, the
+  participant API and the market-data stream are attached to `ACME`'s engine; the other books start empty and stay
+  empty until external flow is routed to them.
+
+```mermaid
+flowchart LR
+    C["Producers (HTTP, API clients, simulator)"] --> R["ExchangeCore<br/>route by command.symbol()"]
+    R -- "ACME" --> A["SymbolEngine ACME<br/>Gateway, input ring, engine, output ring"]
+    R -- "GLOBX" --> G["SymbolEngine GLOBX"]
+    R -- "INITD" --> I["SymbolEngine INITD"]
+    R -- "NVTA" --> N["SymbolEngine NVTA"]
+    R -- "other" --> X["UNKNOWN_SYMBOL rejection"]
+    A --> JA["journal/ACME/"]
+    G --> JG["journal/GLOBX/"]
+    I --> JI["journal/INITD/"]
+    N --> JN["journal/NVTA/"]
+```
+
 ## Journal, snapshots and recovery
 
-`orderbook.journal.Journal` is an event-sourced log in a directory (`-Djournal.path=DIR` in the server, where
-`JournalHandler` writes it from the output ring in global sequence order).
+`orderbook.journal.Journal` is an event-sourced log in a directory. Each symbol journals into its own subdirectory,
+`DIR/<SYMBOL>/` (`-Djournal.path=DIR` in the server), written by that symbol's `JournalHandler` from its output ring
+in that symbol's sequence order. Every symbol's journal is self-contained and recovers on its own
+(`ExchangeCore.recover(root, symbol)` / `Journal.recover(symbol)`); a corrupt journal for one symbol does not affect
+the others.
 
 - **Format v2:** segments `journal-000001.log`, … start with `#orderbook-journal v2 base=<seq>`; each line is
-  `<crc32 hex>:{"seq":N,"cmd":…}` (CRC32 of the JSON). Unversioned v1 JSON Lines journals are rejected, not
-  silently read.
+  `<crc32 hex>:{"seq":N,"cmd":…,"sym":"ACME",…}` (CRC32 of the JSON). Entries record their symbol; an entry
+  without `"sym"` (written before symbols existed) decodes as `ACME`. Unversioned v1 JSON Lines journals are
+  rejected, not silently read.
 - **Snapshots:** `snapshot-<seq>.json` holds the complete engine state (every resting order with id, participant,
   side, type, TIF, price, remaining qty and seqNum; accepted IDs; seqNum and order-ID counters) covering exactly
   journal sequence `seq`. In the pipeline they are sequenced: `tryPublishSnapshot()` markers, every N commands
@@ -53,9 +94,10 @@ The book stores each side as a `TreeMap` of price levels with a FIFO queue per l
 
 ## Pipeline
 
-The engine runs behind an explicit [LMAX Disruptor](https://lmax-exchange.github.io/disruptor/) pipeline
-(`orderbook.pipeline.DisruptorPipeline`). Matching logic is unchanged; the pipeline only decides who feeds the
-engine, in what order, and who hears about the results.
+Each symbol's engine runs behind its own explicit [LMAX Disruptor](https://lmax-exchange.github.io/disruptor/)
+pipeline (`orderbook.pipeline.DisruptorPipeline(symbol)`, threads named `pipeline-<SYMBOL>-N`). Matching logic is
+unchanged; the pipeline only decides who feeds the engine, in what order, and who hears about the results. The
+diagram shows one symbol's pipeline; every symbol has an identical, independent one.
 
 ```mermaid
 flowchart LR
@@ -75,7 +117,7 @@ flowchart LR
 - **Input ring (sequencer):** a preallocated, power-of-two `CommandEvent` ring with multiple producers. Every API
   call (browser, external clients and simulated participants alike) is authenticated and admission-checked first
   (see [Participant API](#participant-api)), then `Gateway` runs the user's account reservation check and claims a
-  slot with `tryPublishEvent()`. The slot's sequence is the command's global `seqNum`.
+  slot with `tryPublishEvent()`. The slot's sequence is the command's `seqNum` within that symbol.
 - **Backpressure:** a full ring never blocks a producer; the command is rejected with `OrderRejected` reason
   `BUSY` and its reservation is released.
 - **Engine:** a single `EventHandler` thread that only matches; no I/O. `BlockingWaitStrategy` on both rings.
