@@ -40,7 +40,7 @@ public final class ExchangeCore implements AutoCloseable {
         Map<String, SymbolEngine> map = new LinkedHashMap<>();
         try {
             for (String symbol : b.symbols) {
-                Symbols.requireListed(symbol);
+                Symbols.requireValid(symbol);
                 if (map.containsKey(symbol)) {
                     throw new IllegalArgumentException("duplicate symbol " + symbol);
                 }
@@ -71,7 +71,7 @@ public final class ExchangeCore implements AutoCloseable {
 
     /** The journal directory of {@code symbol} under {@code journalRoot}. */
     public static Path journalDirectory(Path journalRoot, String symbol) {
-        return journalRoot.resolve(Symbols.requireListed(symbol));
+        return journalRoot.resolve(Symbols.requireValid(symbol));
     }
 
     /** Rebuilds {@code symbol}'s engine from its own journal directory alone; other symbols are not read. */
@@ -153,7 +153,7 @@ public final class ExchangeCore implements AutoCloseable {
         private Builder() {
         }
 
-        /** Symbols to host (each must be listed); defaults to {@link Symbols#ALL}. */
+        /** Symbols to host (well-formed codes, e.g. from the reference-data service); defaults to {@link Symbols#ALL}. */
         public Builder symbols(Collection<String> symbols) {
             this.symbols = List.copyOf(symbols);
             return this;

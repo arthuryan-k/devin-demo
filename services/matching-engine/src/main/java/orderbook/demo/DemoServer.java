@@ -8,6 +8,8 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +33,11 @@ import orderbook.marketdata.Outbox;
 import orderbook.pipeline.JournalHandler;
 import orderbook.pipeline.Pipeline;
 import orderbook.api.AdmissionControl;
+import orderbook.api.ParticipantDirectory;
+import orderbook.api.ParticipantRegistry;
+import orderbook.services.AuthServiceDirectory;
+import orderbook.services.Instrument;
+import orderbook.services.ReferenceDataClient;
 import orderbook.sim.ClientLoop;
 import orderbook.sim.ExecutorScheduler;
 import orderbook.sim.Simulator;
@@ -47,6 +54,8 @@ public final class DemoServer {
     private final Server server;
     private final ServerConnector connector;
     private final DemoApp app;
+    /** Signed-in browsers carry the auth service's JWT in {@value #SESSION_COOKIE}; never overwrite it. */
+    private final boolean authService;
     /** Owned exchange core (one engine per symbol) when started from {@link #main}; null if given a simulator. */
     private final ExchangeCore core;
     private final ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -60,13 +69,53 @@ public final class DemoServer {
      * {@link Symbols#DEFAULT}, the other books start (and stay) empty until external flow arrives.
      */
     public DemoServer(InetSocketAddress address) throws IOException {
-        this(address, createCore(System.getProperty("journal.path", System.getenv("JOURNAL_PATH"))));
+        this(address, Backends.fromEnv());
     }
 
-    private DemoServer(InetSocketAddress address, ExchangeCore core) throws IOException {
+    private DemoServer(InetSocketAddress address, Backends backends) throws IOException {
+        this(address, backends, createCore(System.getProperty("journal.path", System.getenv("JOURNAL_PATH")),
+                backends.instruments()));
+    }
+
+    private DemoServer(InetSocketAddress address, Backends backends, ExchangeCore core) throws IOException {
         this(address, new Simulator(defaultSeed(), Simulator.DEFAULT_START_REFERENCE_TICKS,
                 new ExecutorScheduler("simulator"), core.engine(Symbols.DEFAULT).gateway()), null,
-                AdmissionControl.Limits.DEFAULT, core);
+                AdmissionControl.Limits.DEFAULT, core, backends);
+    }
+
+    /**
+     * Where identities and the listing come from. {@code AUTH_SERVICE_URL} (+ {@code AUTH_INTERNAL_TOKEN}) switches
+     * API keys, registration and session tokens to the auth service; {@code REFDATA_URL} hosts the symbols the
+     * reference-data service lists. Unset, both stay in-process (in-memory keys, {@link Symbols#ALL}).
+     */
+    record Backends(ParticipantDirectory directory, List<Instrument> instruments, boolean authService) {
+
+        static Backends local() {
+            return new Backends(new ParticipantRegistry(new SecureRandom()), DemoApp.builtInInstruments(), false);
+        }
+
+        static Backends fromEnv() throws IOException {
+            Backends local = local();
+            String auth = setting("auth.url", "AUTH_SERVICE_URL");
+            String refdata = setting("refdata.url", "REFDATA_URL");
+            ParticipantDirectory directory = auth == null ? local.directory()
+                    : new AuthServiceDirectory(URI.create(auth), setting("auth.internalToken", "AUTH_INTERNAL_TOKEN"),
+                            Duration.ofSeconds(Long.getLong("auth.cacheSeconds", 30)));
+            List<Instrument> instruments = local.instruments();
+            if (refdata != null) {
+                instruments = new ReferenceDataClient(URI.create(refdata)).symbols(30, Duration.ofSeconds(1));
+                if (instruments.stream().noneMatch(i -> i.symbol().equals(Symbols.DEFAULT))) {
+                    throw new IOException("reference data at " + refdata + " does not list " + Symbols.DEFAULT
+                            + ", which the simulator and the page trade");
+                }
+            }
+            return new Backends(directory, instruments, auth != null);
+        }
+
+        private static String setting(String property, String env) {
+            String v = System.getProperty(property, System.getenv(env));
+            return v == null || v.isBlank() ? null : v.trim();
+        }
     }
 
     /** {@code accountFactory} builds the user's account at startup and on reset; null for a random starting cash. */
@@ -83,8 +132,14 @@ public final class DemoServer {
 
     private DemoServer(InetSocketAddress address, Simulator simulator, Supplier<Account> accountFactory,
             AdmissionControl.Limits limits, ExchangeCore core) throws IOException {
+        this(address, simulator, accountFactory, limits, core, Backends.local());
+    }
+
+    DemoServer(InetSocketAddress address, Simulator simulator, Supplier<Account> accountFactory,
+            AdmissionControl.Limits limits, ExchangeCore core, Backends backends) throws IOException {
         this.core = core;
-        app = new DemoApp(simulator, accountFactory, limits, new SecureRandom());
+        this.authService = backends.authService();
+        app = new DemoApp(simulator, accountFactory, limits, backends.directory(), backends.instruments());
         server = new Server();
         connector = new ServerConnector(server);
         connector.setHost(address.getAddress() != null ? address.getAddress().getHostAddress() : address.getHostString());
@@ -103,8 +158,8 @@ public final class DemoServer {
      * {@code -Djournal.fsyncMillis=T} (default 10) and {@code -Djournal.snapshotEvery=N} commands (default 10000,
      * 0 disables).
      */
-    private static ExchangeCore createCore(String path) {
-        ExchangeCore.Builder builder = ExchangeCore.builder();
+    private static ExchangeCore createCore(String path, List<Instrument> instruments) {
+        ExchangeCore.Builder builder = ExchangeCore.builder().symbols(instruments.stream().map(Instrument::symbol).toList());
         if (path != null && !path.isBlank()) {
             builder.journalRoot(Path.of(path.trim())).journalOptions(journalOptions())
                     .snapshotInterval(snapshotInterval());
@@ -224,7 +279,7 @@ public final class DemoServer {
                 return true;
             }
             if (!app.isApi(path)) {
-                serveStatic(path, response, callback);
+                serveStatic(path, apiKey(request), response, callback);
                 return true;
             }
             DemoApp.Reply reply = app.handle(request.getMethod(), path, request.getHttpURI().getQuery(),
@@ -287,7 +342,7 @@ public final class DemoServer {
         return null;
     }
 
-    private void serveStatic(String path, Response response, Callback callback) throws IOException {
+    private void serveStatic(String path, String session, Response response, Callback callback) throws IOException {
         if (!path.equals("/") && !path.equals("/index.html")) {
             send(response, callback, 404, "text/plain", "not found".getBytes(StandardCharsets.UTF_8));
             return;
@@ -297,8 +352,10 @@ public final class DemoServer {
                 send(response, callback, 500, "text/plain", "index.html missing".getBytes(StandardCharsets.UTF_8));
                 return;
             }
-            response.getHeaders().put(HttpHeader.SET_COOKIE,
-                    SESSION_COOKIE + "=" + app.userKey() + "; Path=/; HttpOnly; SameSite=Strict");
+            if (!(authService && session != null && AuthServiceDirectory.isJwt(session))) {
+                response.getHeaders().put(HttpHeader.SET_COOKIE,
+                        SESSION_COOKIE + "=" + app.userKey() + "; Path=/; HttpOnly; SameSite=Strict");
+            }
             send(response, callback, 200, "text/html; charset=utf-8", in.readAllBytes());
         }
     }

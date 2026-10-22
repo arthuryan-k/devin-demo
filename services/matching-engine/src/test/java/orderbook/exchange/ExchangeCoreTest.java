@@ -99,7 +99,7 @@ class ExchangeCoreTest {
             }
             assertThrows(IllegalArgumentException.class, () -> core.engine("ZZZZ"));
             assertThrows(IllegalArgumentException.class,
-                    () -> ExchangeCore.builder().symbols(List.of("ZZZZ")).build());
+                    () -> ExchangeCore.builder().symbols(List.of("not a symbol")).build());
         }
     }
 
