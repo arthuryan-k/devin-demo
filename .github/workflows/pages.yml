@@ -24,11 +24,14 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
+          cache-dependency-path: services/matching-engine/pom.xml
       - run: mvn -B test
+        working-directory: services/matching-engine
       - run: scripts/build-pages.sh
+        working-directory: services/matching-engine
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: target/pages
+          path: services/matching-engine/target/pages
   deploy:
     needs: build
     runs-on: ubuntu-latest

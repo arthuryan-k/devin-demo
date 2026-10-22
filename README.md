@@ -1,16 +1,29 @@
 # devin-demo
 
-A price-time priority limit order book in Java 17, with a market simulator that trades against it.
+A price-time priority exchange in Java 17, with a market simulator that trades against it, organized as a monorepo
+for a growing set of services.
 
 **[Live demo](https://arthuryan-k.github.io/devin-demo/)**
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (matching engine, Disruptor pipeline, market data).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol pipelines, journal, market data).
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `services/` | One directory per deployable service; each builds on its own toolchain. |
+| `services/matching-engine/` | Java 17 / Maven: the exchange core (one matching engine, Disruptor pipeline and journal per symbol), participant HTTP API, market-data stream, market simulator and the TeaVM browser build. |
+| `ARCHITECTURE.md` | Internals of the services. |
+| `.github/workflows/` | CI: tests the matching engine and deploys the live demo to GitHub Pages. |
+
+Listed symbols: `ACME`, `GLOBX`, `INITD`, `NVTA`. Every book starts empty, with no liquidity and no price; the demo
+and simulator currently trade `ACME`.
 
 ## What is this
 
 A limit order book is the core of an exchange: buyers and sellers post orders at the prices they are willing to
-trade, and the matching engine pairs them up, best price first and, at the same price, first come first served. This
-repo is a single-instrument order book that supports limit and market orders, good-till-cancelled,
+trade, and the matching engine pairs them up, best price first and, at the same price, first come first served. The
+matching engine hosts one order book per symbol; each supports limit and market orders, good-till-cancelled,
 immediate-or-cancel and fill-or-kill orders, amends, cancels and self-trade prevention, with every order recorded in
 a crash-safe journal. Around it sits an interactive demo: a simulated market full of trading bots, which you can
 join and trade against from your browser or over an HTTP API.
@@ -78,7 +91,10 @@ curl -s -H "X-Api-Key: $KEY" -d 'side=BUY&type=LIMIT&price=99.50&qty=10' localho
 
 ## Build and run
 
+From `services/matching-engine/`:
+
 ```
 mvn test                              # engine, simulator, account, server and property tests
 mvn compile exec:java                 # local server at http://localhost:8080/ (SIM_SEED=42 for a fixed seed)
+scripts/build-pages.sh                # static browser build into target/pages
 ```
