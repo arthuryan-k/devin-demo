@@ -476,7 +476,7 @@ horizontally scalable service. Its message formats are documented in
   trades and events, `seq`, and subscriber set. All of it runs on one asyncio loop, so taking a snapshot and
   registering a subscriber happen atomically with respect to applying deltas. That is the same guarantee the Java
   publisher gets from its lock.
-- **Upstream gaps:** a delta is applied only if its `seq` is exactly `last + 1`. A delta with seq 1 on an empty
+- **Upstream gaps:** a delta is applied only if its `seq` is exactly `last + 1`. A delta with seq 0 (the engine's first command) on an empty
   feed starts from an empty book, and a snapshot replaces the book.
   - On a gap, the feed resets and seeks its partition back to the offset of the last snapshot it saw (or 0). It
     replays silently until it has passed the seq that exposed the gap, then sends every subscriber a `resync`

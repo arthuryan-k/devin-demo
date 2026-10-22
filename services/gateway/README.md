@@ -31,7 +31,7 @@ curl -s localhost:8080/api/orders -H "authorization: Bearer $TOKEN" -H 'content-
 
 | Route | Auth | |
 | --- | --- | --- |
-| `POST /api/orders` | yes | `symbol`, `side` (`BUY`/`SELL`), `type` (`LIMIT`/`MARKET`, default `LIMIT`), `price` (decimal, LIMIT only), `qty`, `timeInForce` (`GTC`/`IOC`/`FOK`, default `GTC`). JSON or form-encoded |
+| `POST /api/orders` | yes | `symbol`, `side` (`BUY`/`SELL`), `type` (`LIMIT`/`MARKET`, default `LIMIT`), `price` (decimal, LIMIT only), `qty`, `timeInForce` (`GTC`/`IOC`/`FOK`; default `GTC` for LIMIT, `IOC` for MARKET). JSON or form-encoded |
 | `PATCH /api/orders/{id}` | yes | new `price` and/or `qty` (new remaining qty) |
 | `DELETE /api/orders/{id}` | yes | cancel |
 | `GET /api/symbols` | no | instruments with tick and lot size |
