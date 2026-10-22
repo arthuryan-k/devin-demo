@@ -29,6 +29,30 @@ SELECT seq, event_type, order_id, side, price_ticks, qty FROM orders_history
 WHERE symbol = 'ACME' AND participant_id = 1001 ORDER BY seq, event_index;
 ```
 
+## Read API
+
+The worker also serves its tables over HTTP on port 8083 (compose service `history-writer`, so
+`HISTORY_URL=http://history-writer:8083`). Every query is scoped to one participant, newest first; the gateway passes
+the authenticated caller's id.
+
+| Route | Returns |
+|---|---|
+| `GET /v1/orders?participantId=&symbol=&limit=` | `{ "orders": [...] }`: the participant's order lifecycle rows |
+| `GET /v1/trades?participantId=&symbol=&limit=` | `{ "trades": [...] }`: fills where the participant is maker **or** taker |
+| `GET /healthz` | `{ "status": "ok" }` |
+
+`participantId` (positive integer) is required; `symbol` is optional; `limit` defaults to 100, maximum 1000. Anything
+else returns `400 {"error":"bad_request"}`.
+
+```console
+$ curl -s 'localhost:8083/v1/trades?participantId=1002&symbol=ACME&limit=1'
+{"trades":[{"symbol":"ACME","seq":1,"eventIndex":1,"makerOrderId":1,"takerOrderId":17,"makerParticipantId":1001,
+  "takerParticipantId":1002,"aggressorSide":"BUY","priceTicks":10100,"qty":3,"eventTime":"2026-10-22T14:38:42.059Z"}]}
+```
+
+Order rows carry `symbol, seq, eventIndex, orderId, participantId, eventType` (`PLACED`/`AMENDED`/`CANCELLED`/`REJECTED`),
+`side, orderType, timeInForce, priceTicks, qty, reason, details, eventTime`. Prices are integer ticks, as on the bus.
+
 ## Configuration
 
 | Variable | Default | |
@@ -36,6 +60,7 @@ WHERE symbol = 'ACME' AND participant_id = 1001 ORDER BY seq, event_index;
 | `DATABASE_URL` | required | |
 | `KAFKA_BROKERS` | `localhost:9092` | comma-separated |
 | `KAFKA_GROUP_ID` | `history-writer` | consumer group; offsets are committed after the rows |
+| `PORT` | `8083` | read API port |
 | `TOPIC_DISCOVERY_MS` | `10000` | how often to look for newly created `events.<symbol>` topics |
 
 ## Build and run

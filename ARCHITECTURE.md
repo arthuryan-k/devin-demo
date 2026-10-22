@@ -242,7 +242,7 @@ flowchart LR
 | `db/migrations` | Flyway 10, plain SQL | schema history for every service | below |
 | `auth-service` | TypeScript, Node 22, Fastify 5, `pg`, bcrypt, `jose` | `users`, `accounts`, `api_keys` | [README](services/auth-service/README.md) |
 | `reference-data-service` | TypeScript, Node 22, Fastify 5, `pg` | `reference_data` (read side) | [README](services/reference-data-service/README.md) |
-| `history-writer` | TypeScript, Node 22, KafkaJS, `pg` | `orders_history`, `trades_history` | [README](services/history-writer/README.md) |
+| `history-writer` | TypeScript, Node 22, KafkaJS, Fastify, `pg` | `orders_history`, `trades_history` | [README](services/history-writer/README.md) |
 
 TypeScript and Fastify are a common choice for identity and edge services, and they share one toolchain with the
 gateway and frontend. The migrations are plain SQL, so a service in any language (such as the Python portfolio
@@ -299,6 +299,11 @@ become `orders_history` rows, and `TradeExecuted` becomes a `trades_history` row
 transaction with `ON CONFLICT DO NOTHING`, and the offset is committed only afterwards. Redelivery is therefore
 idempotent, and the history matches the engine's sequence exactly. Records that fail to parse are logged and skipped
 as poison messages. A database error stops consumption without committing, so the record is retried.
+
+The same process serves a read API on port 8083: `GET /v1/orders` and `GET /v1/trades`, with `participantId`
+(required), `symbol` and `limit` (default 100, maximum 1000). Results are newest first. Trades match either the maker
+or the taker. The service does no authentication of its own; the gateway calls it at `HISTORY_URL` and passes the
+caller's participant id. The reads use the `(participant_id, event_time DESC)` indexes on both tables.
 
 ## Participant API
 

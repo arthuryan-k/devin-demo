@@ -103,6 +103,12 @@ services:
     environment:
       DATABASE_URL: postgres://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
       KAFKA_BROKERS: redpanda:9092
+    # Read API (GET /v1/orders, /v1/trades) for the gateway: HISTORY_URL=http://history-writer:8083
+    ports: ["8083:8083"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8083/healthz"]
+      interval: 5s
+      retries: 20
     depends_on:
       db-migrate: { condition: service_completed_successfully }
       redpanda: { condition: service_healthy }
