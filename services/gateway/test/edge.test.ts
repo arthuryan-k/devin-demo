@@ -97,3 +97,16 @@ describe("upstream proxies", () => {
     ]);
   });
 });
+
+describe("portfolio BFF route", () => {
+  it("returns the caller's own account", async () => {
+    const portfolio = Fastify();
+    portfolio.get("/v1/accounts/:id", async (req) => ({ accountId: Number((req.params as { id: string }).id) }));
+    const url = await portfolio.listen({ port: 0, host: "127.0.0.1" });
+    const h = await harness();
+    const app = await buildApp({ orders: h.orders, auth: h.auth, symbols: h.symbols, portfolioUrl: url });
+    cleanup.push(() => portfolio.close(), () => app.close(), () => h.app.close());
+    expect((await app.inject({ method: "GET", url: "/api/portfolio" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/portfolio", headers: { "x-api-key": "key-alice" } })).json()).toEqual({ accountId: ALICE.participantId });
+  });
+});

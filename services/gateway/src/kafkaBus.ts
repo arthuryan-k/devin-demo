@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { Kafka, logLevel, type Consumer, type Producer } from "kafkajs";
+import { Kafka, logLevel, type Consumer, type Producer, Partitioners } from "kafkajs";
 
 import type { Bus, BusHandler } from "./bus.js";
 
@@ -23,12 +23,21 @@ export class KafkaBus implements Bus {
       const admin = this.kafka.admin();
       await admin.connect();
       try {
-        await admin.createTopics({ topics: topics.map((topic) => ({ topic, numPartitions: 1 })), waitForLeaders: true });
+        // The matching engine owns its topics (and compose disables auto-create); only fill in missing ones.
+        const existing = new Set(await admin.listTopics());
+        const missing = topics.filter((t) => !existing.has(t));
+        if (missing.length > 0) {
+          await admin.createTopics({ topics: missing.map((topic) => ({ topic, numPartitions: 1 })), waitForLeaders: true });
+        }
       } finally {
         await admin.disconnect();
       }
     }
-    this.producer = this.kafka.producer({ idempotent: true, maxInFlightRequests: 1 });
+    this.producer = this.kafka.producer({
+      idempotent: true,
+      maxInFlightRequests: 1,
+      createPartitioner: Partitioners.DefaultPartitioner,
+    });
     await this.producer.connect();
   }
 

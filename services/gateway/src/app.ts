@@ -17,6 +17,8 @@ export interface AppDeps {
   sessionCookie?: string;
   /** Market-data service base URL; {@code /marketdata/*} (incl. WebSocket upgrades) is proxied to it. */
   marketDataUrl?: string;
+  /** Portfolio service; {@code GET /api/portfolio} returns the caller's account from {@code /v1/accounts/{participantId}}. */
+  portfolioUrl?: string;
   /**
    * Authenticated forwarded routes: public prefix -> upstream URL. A path on the URL replaces the prefix
    * (no path keeps it; {@code http://reference-data:8082/} maps {@code /api/reference/x} to {@code /x}).
@@ -88,6 +90,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   app.get("/api/me", { preHandler: authenticate }, async (request) => request.principal);
+
+  if (deps.portfolioUrl) {
+    const portfolioUrl = deps.portfolioUrl.replace(/\/$/, "");
+    app.get("/api/portfolio", { preHandler: authenticate }, async (request, reply) => {
+      let res: Response;
+      try {
+        res = await fetch(`${portfolioUrl}/v1/accounts/${request.principal!.participantId}`, { signal: AbortSignal.timeout(3_000) });
+      } catch (e) {
+        throw new ApiError(503, "PORTFOLIO_UNAVAILABLE", `portfolio service unreachable: ${(e as Error).message}`);
+      }
+      return reply.status(res.status).type("application/json").send(await res.text());
+    });
+  }
 
   if (deps.authServiceUrl) {
     for (const [prefix, rewritePrefix] of Object.entries(AUTH_ROUTES)) {

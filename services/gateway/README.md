@@ -36,6 +36,7 @@ curl -s localhost:8080/api/orders -H "authorization: Bearer $TOKEN" -H 'content-
 | `DELETE /api/orders/{id}` | yes | cancel |
 | `GET /api/symbols` | no | instruments with tick and lot size |
 | `GET /api/me` | yes | the authenticated principal |
+| `GET /api/portfolio` | yes | the caller's cash, reservations, positions and P&L from the portfolio service |
 | `/auth/*`, `/api/auth/*`, `/api-keys`, `POST /participants/register` | auth-service rules | proxied to [auth-service](../auth-service/README.md): signup, login, logout, me, API keys, simulated participants |
 | `/marketdata/*`, `/ws/marketdata/*` (incl. WebSocket) | no | proxied to [market-data](../market-data/README.md), e.g. `ws://localhost:8080/marketdata/ACME/ws` |
 | `GET /healthz` | no | |
@@ -55,7 +56,7 @@ Error bodies are `{"error": "<message>", "reason": "<CODE>"}`.
 | 403 | `BLOCKED` | after 100 limit violations, until the gateway restarts |
 | 404 | `UNKNOWN_ORDER` | |
 | 429 | `RATE_LIMITED`, `MAX_OPEN_ORDERS` | 200 msgs/s per participant (burst 400), at most 100 open orders. Each 429 counts as a violation |
-| 503 | `AUTH_UNAVAILABLE`, `RISK_UNAVAILABLE`, `BUS_UNAVAILABLE` | a dependency is down. Fail closed: nothing reaches the engine |
+| 503 | `AUTH_UNAVAILABLE`, `RISK_UNAVAILABLE`, `BUS_UNAVAILABLE`, `PORTFOLIO_UNAVAILABLE` | a dependency is down. Fail closed: nothing reaches the engine |
 | 504 | `ENGINE_TIMEOUT` | published, but the engine didn't answer in time. Includes `orderId`/`correlationId`, so the order's state is unknown rather than lost |
 
 ## Configuration
@@ -71,6 +72,7 @@ Error bodies are `{"error": "<message>", "reason": "<CODE>"}`.
 | `RISK_URL` | `http://localhost:8092` | |
 | `REFERENCE_DATA_URL` | unset | symbols from `GET /symbols`. Without it: ACME, GLOBX, INITD, NVTA at 0.01 |
 | `MARKET_DATA_URL` | unset | enables the `/marketdata` proxy |
+| `PORTFOLIO_URL` | unset | enables `GET /api/portfolio` |
 | `UPSTREAMS` | unset | extra authenticated proxies, `prefix=url`, comma-separated. A path on the URL replaces the prefix, e.g. `/api/reference=http://reference-data-service:8082/` serves `/api/reference/symbols` from `/symbols`. Upstreams receive `X-Participant-Id`/`X-Account-Id` |
 | `SYMBOLS` | all | restrict to a comma-separated subset |
 | `GATEWAY_INSTANCE` | `0` | 0–15, part of every order id. Must be unique per replica |
