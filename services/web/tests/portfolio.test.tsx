@@ -52,3 +52,29 @@ describe("portfolio panel", () => {
     expect(p.unrealizedPnl).toBeCloseTo(p.qty * p.markPrice! - p.qty * p.avgCost!, 6);
   });
 });
+
+describe("portfolio tab", () => {
+  it("switches between the trade layout and a full portfolio page", async () => {
+    const { Workstation } = await import("../src/components/Workstation");
+    const { renderInWorkspace, quietMock } = await import("./helpers");
+    const { fireEvent } = await import("@testing-library/react");
+    const b = quietMock();
+    await b.login("demo", "demo1234");
+    renderInWorkspace(<Workstation notices={[]} onLogout={() => {}} />, b);
+    const tab = (name: string) => screen.getByRole("tab", { name });
+    expect(tab("Trade")).toHaveAttribute("aria-selected", "true");
+    expect(tab("Research")).toBeDisabled();
+    expect(screen.queryByTestId("portfolio-page")).toBeNull();
+
+    fireEvent.click(tab("Portfolio"));
+    expect(tab("Portfolio")).toHaveAttribute("aria-selected", "true");
+    const page = screen.getByTestId("portfolio-page");
+    expect(page).toContainElement(screen.getByTestId("positions"));
+    expect(page).toContainElement(screen.getByTestId("activity"));
+    expect(await screen.findByTestId("pos-ACME")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("pos-ACME"));
+    expect(tab("Trade")).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByTestId("portfolio-page")).toBeNull();
+  });
+});
