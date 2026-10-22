@@ -55,7 +55,7 @@ export interface HistoryRows {
 
 export class MalformedRecordError extends Error {}
 
-/** Engine prices are integer ticks of 0.01 (see orderbook.demo.Ticks). */
+/** Engine prices are integer ticks of 0.01 (100 ticks = 1.00). */
 const TICK_DECIMALS = 2;
 
 const ORDER_EVENTS: Record<string, OrderEventType> = {

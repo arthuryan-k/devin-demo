@@ -1,5 +1,5 @@
 /**
- * Per-participant admission control, ported from the Java gateway (orderbook.api.AdmissionControl): a token bucket on
+ * Per-participant admission control, ported from the retired in-process Java participant API: a token bucket on
  * every order/cancel/amend message, a cap on open orders, and a violation counter that blocks a participant.
  */
 

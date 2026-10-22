@@ -2,8 +2,56 @@
 
 [Back to README](README.md)
 
-Internals of the matching engine service (`services/matching-engine/`): the per-symbol exchange core, the Disruptor
-pipeline, the event bus, the participant API, the market-data feed and the market simulator.
+Internals of the services: the per-symbol exchange core and its Disruptor pipeline, journal and event bus
+(`services/matching-engine/`), the brokerage services, the gateways, market data, the market simulator and the web
+frontend. The matching core is empty plumbing: it never quotes or discovers a price. All liquidity comes from
+outside participants, in practice the simulator.
+
+## End-to-end topology
+
+```mermaid
+flowchart LR
+    browser["Browser (services/web)"]
+    bots["REST / WebSocket bots"]
+    fixclient["FIX 4.4 client"]
+    sim["simulator (persona load generator)"]
+    gateway["gateway (REST + proxies)"]
+    fixgw["fix-gateway (legacy FIX acceptor)"]
+    auth["auth-service"]
+    refdata["reference-data-service"]
+    risk["risk"]
+    portfolio["portfolio"]
+    history["history-writer"]
+    md["market-data (WebSocket)"]
+    bus[("Redpanda: commands.SYM / events.SYM / marketdata.SYM")]
+    engine["matching-engine (one book per symbol, no liquidity)"]
+    pg[("Postgres")]
+
+    browser --> gateway
+    bots --> gateway
+    sim -->|"sign-up, orders, market data"| gateway
+    sim -->|"account endowment"| portfolio
+    fixclient --> fixgw
+    gateway --> auth
+    gateway --> risk
+    fixgw -->|"API key check"| auth
+    fixgw --> risk
+    gateway -->|"commands.SYM"| bus
+    fixgw -->|"commands.SYM"| bus
+    bus --> engine
+    engine -->|"events.SYM, marketdata.SYM"| bus
+    bus -->|"events.SYM"| gateway
+    bus -->|"events.SYM"| fixgw
+    bus --> portfolio
+    bus --> history
+    bus -->|"marketdata.SYM"| md
+    gateway --> md
+    auth --> pg
+    refdata --> pg
+    risk --> pg
+    portfolio --> pg
+    history --> pg
+```
 
 ## Matching engine
 
@@ -47,13 +95,12 @@ one book per instrument). Symbols are a fixed set in `orderbook.Symbols`: `ACME`
   order, and a burst on one symbol only backs up its own ring (`BUSY` stays per symbol). `seq`/`seqNum` are per
   symbol. The only shared state is the order-id counter (all gateways share one `AtomicLong`), keeping order ids
   unique exchange-wide.
-- **Today's wiring:** `DemoServer` builds an `ExchangeCore` for all four symbols. The simulator, the browser, the
-  participant API and the market-data stream are attached to `ACME`'s engine; the other books start empty and stay
-  empty until external flow is routed to them.
+- **Wiring:** `EngineService` builds an `ExchangeCore` for every hosted symbol and feeds each one from its
+  `commands.<symbol>` topic. Every book starts empty and stays empty until outside participants send orders.
 
 ```mermaid
 flowchart LR
-    C["Producers (HTTP, API clients, simulator)"] --> R["ExchangeCore<br/>route by command.symbol()"]
+    C["commands.SYM consumers (SymbolBus)"] --> R["ExchangeCore<br/>route by command.symbol()"]
     R -- "ACME" --> A["SymbolEngine ACME<br/>Gateway, input ring, engine, output ring"]
     R -- "GLOBX" --> G["SymbolEngine GLOBX"]
     R -- "INITD" --> I["SymbolEngine INITD"]
@@ -101,29 +148,25 @@ diagram shows one symbol's pipeline; every symbol has an identical, independent 
 
 ```mermaid
 flowchart LR
-    HTTP["HTTP order / cancel / amend"] --> GW
-    SIM["Simulator (personas)"] --> GW
-    GW["Gateway<br/>auth + admission control<br/>full ring: BUSY"] -- "tryPublishEvent" --> IN
+    BUS["commands.SYM<br/>(SymbolBus consumer)"] --> GW
+    GW["Gateway<br/>full ring: BUSY"] -- "tryPublishEvent" --> IN
     IN["Input ring<br/>CommandEvent<br/>slot seq = global seqNum"] --> ENG
     ENG["Engine<br/>1 thread, matching only"] --> OUT
     OUT["Output ring<br/>ResultEvent, same seq"] --> J["JournalHandler<br/>journal + snapshots"]
     OUT --> MD["MarketDataPublisher"]
-    MD --> SSE["GET /marketdata/stream (SSE)"]
-    OUT --> RR["ResponseRouter"]
-    RR --> CF["CompletableFuture per HTTP caller"]
-    OUT --> RM["Simulator read model<br/>replica book, personas"]
+    MD --> MDT["marketdata.SYM"]
+    OUT --> EV["events.SYM"]
 ```
 
-- **Input ring (sequencer):** a preallocated, power-of-two `CommandEvent` ring with multiple producers. Every API
-  call (browser, external clients and simulated participants alike) is authenticated and admission-checked first
-  (see [Participant API](#participant-api)), then `Gateway` claims a
-  slot with `tryPublishEvent()`. The slot's sequence is the command's `seqNum` within that symbol.
+- **Input ring (sequencer):** a preallocated, power-of-two `CommandEvent` ring. Commands arrive already
+  authenticated, admission-checked and risk-checked by the [gateway](#gateway) or the [FIX gateway](#fix-gateway);
+  `Gateway` claims a slot with `tryPublishEvent()`. The slot's sequence is the command's `seqNum` within that symbol.
 - **Backpressure:** a full ring never blocks a producer; the command is rejected with `OrderRejected` reason
   `BUSY` and its reservation is released.
 - **Engine:** a single `EventHandler` thread that only matches; no I/O. `BlockingWaitStrategy` on both rings.
 - **Output ring (fan-out):** every result goes onto a second ring read by independent handlers, each on its own
-  thread with its own cursor: the journal writer, the market-data publisher, the response router (completes the
-  waiting HTTP caller's `CompletableFuture`, keyed by sequence) and the simulator's read model. A slow handler
+  thread with its own cursor: the journal writer, the market-data publisher and the `events.<symbol>` publisher. A
+  slow handler
   only falls behind. Matching waits only once a handler lags by a whole output ring, and producers then see `BUSY`.
 
 ## Event bus
@@ -133,7 +176,7 @@ Between services, the matching engine talks over a Kafka-compatible event bus
 `orderbook.bus.EngineService` (image built from `services/matching-engine/Dockerfile`) runs one `SymbolBus` per
 listed symbol: it consumes `commands.<symbol>`, feeds that symbol's Disruptor input ring and publishes the output
 ring to `events.<symbol>` and `marketdata.<symbol>`. The bus is the transport; each symbol's journal stays the local
-durable log. (The in-process demo server, `DemoServer`, still feeds the rings directly.)
+durable log.
 
 ### Topics
 
@@ -284,8 +327,7 @@ database client waits for it to complete successfully.
 
 `Symbols.ALL` is now only the built-in fallback. `EngineService` hosts `SYMBOLS` if it is set, otherwise the
 active listing from `REFDATA_URL` (fetched with retries while compose starts), and otherwise `Symbols.ALL`.
-`DemoServer` works the same way and serves the listing at `GET /api/symbols`, which the page uses for its header. A
-hosted symbol only needs to be a well-formed code (`[A-Z][A-Z0-9]{0,9}`, `Symbols.requireValid`); it does not have
+A hosted symbol only needs to be a well-formed code (`[A-Z][A-Z0-9]{0,9}`, `Symbols.requireValid`); it does not have
 to appear in `Symbols.ALL`.
 
 ### History
@@ -305,60 +347,55 @@ The same process serves a read API on port 8083: `GET /v1/orders` and `GET /v1/t
 or the taker. The service does no authentication of its own; the gateway calls it at `HISTORY_URL` and passes the
 caller's participant id. The reads use the `(participant_id, event_time DESC)` indexes on both tables.
 
-## Participant API
-
-Endpoints and an example are in the [README](README.md#participant-api).
-
-- **Authentication:** the server resolves callers through a `ParticipantDirectory`. With `AUTH_SERVICE_URL` set it
-  is `AuthServiceDirectory`, which looks up API keys (`GET /internal/api-keys/verify`) and session JWTs
-  (`GET /auth/me`) against the [auth service](#brokerage-services-and-postgres) and registers participants there.
-  Positive lookups are cached for 30 s (`auth.cacheSeconds`), and unknown keys for a tenth of that. Labels are
-  fetched in the background so the market-data path never blocks. If the auth service is unreachable, callers get
-  `503 AUTH_UNAVAILABLE` instead of `401`. Without `AUTH_SERVICE_URL` (tests and the in-page build), the in-memory
-  `ParticipantRegistry` is used. A missing or unknown key gets `401`, and touching another participant's order is
-  rejected with `NOT_OWN_OPEN_ORDER`.
-- **Browser sessions:** someone who signed up or logged in carries the auth service's JWT in the `ob_session`
-  cookie and trades as their own account, and the page never overwrites that cookie. Anonymous visitors get the
-  local reserved key for `YOU` (participant 1), which can never be registered.
-- **Admission control:** checks run in the gateway before anything is published to the input ring. Each
-  participant has a token bucket of 200 messages/sec with a burst of 400 (orders, cancels and amends each cost one)
-  and may have at most 100 open orders. A breach gets `429` with reason `RATE_LIMITED` or `MAX_OPEN_ORDERS`.
-- **Blocking:** after 100 violations a participant gets `403 BLOCKED` on every call. `POST /api/reset` clears
-  the counters.
-- Responses carry the order ID, the global `seq` and the engine's events. `YOU` also gets its book and open orders.
-
 ## Market data
 
-`MarketDataPublisher` turns engine events into an aggregated (L2) feed, one message per global `seqNum`:
+`MarketDataPublisher` turns engine events into an aggregated (L2) feed on `marketdata.<symbol>`, one message per
+per-symbol `seqNum`:
 
 - `snapshot`: `{"type":"snapshot","seq":S,"bids":[[price,qty,orders],…],"asks":[…],"trades":[…],"events":[…]}`
 - `delta`: `{"type":"delta","seq":N,"levels":[["a"|"u"|"r","B"|"S",price,qty,orders],…],"events":[…]}`. Trade
-  prints are `TradeExecuted` entries in `events`. Prices are integer ticks.
+  prints are `TradeExecuted` entries in `events`, with maker and taker order ids. Prices are integer ticks.
 
-`GET /marketdata/stream` is Server-Sent Events. Its first message is always a snapshot, taken under the same lock
-that applies results, so there is no snapshot/subscribe race. After snapshot `S`, deltas arrive as `S+1`, `S+2`, …
-with no holes. Any other sequence is a gap, and the client resyncs from a fresh snapshot. A slow client's backlog
-is replaced by a single snapshot. The page keeps a local book replica from the snapshot plus deltas, and the
-event log and trade tape filter the same stream. YOU's open orders are polled from `GET /api/account`.
+After snapshot `S`, deltas arrive as `S+1`, `S+2`, … with no holes; any other sequence is a gap and the consumer
+resyncs from a fresh snapshot. Clients read it through the [market-data service](#market-data-service).
 
 ## Market simulator
 
-`orderbook.sim.Simulator` is an orchestrator of API clients. Each simulated participant runs on its own client thread,
-registers through `POST /participants/register` and trades over HTTP with its own key and limits.
+The simulator is a separate container and the exchange's only liquidity. Each simulated participant signs up for a
+real `simulated` account (`POST /participants/register`), is opened in the portfolio ledger with its cash grant
+plus `ENDOWMENT_SHARES` of its symbol (risk forbids shorting), and trades with its own API key over the gateway's
+public REST API, watching the market-data WebSocket like any bot.
 
-- **Turns:** each Poisson arrival deals one participant a turn: a snapshot of the market (reference price, top 10
-  levels, its own orders), which its persona turns into authenticated order/cancel/amend calls.
-- **Reproducibility:** runs are reproducible from a seed when participants run in-process (the static demo and
-  tests).
-- **Risk tolerance:** each participant is assigned a persona and a hidden `riskTolerance` between 0 and 1 when it
-  joins. A market maker's spread and readiness to leave depend on it.
+- **Per-symbol markets.** Each symbol has its own hidden `ReferencePrice` (random walk + drift + decaying shocks),
+  its own seeded stream and its own population; personas never see another symbol.
+- **Personas** (weights 58/19/19/4): market maker (quotes around the reference, skews by inventory), aggressive
+  taker (crosses with informed-flow bias toward the drift), maintenance trader (amends/cancels its orders), whale
+  (sweeps and sets off a volatility shock).
+- **Churn.** Entries ramp in; exits cancel every resting order the participant owns before it leaves. `stop`
+  makes everyone leave, so the books drain.
+- **Own-order tracking.** A participant knows its orders from its REST replies and learns maker fills from trade
+  prints on the market-data feed (which carry `makerOrderId`).
 
-## Your account (`YOU`)
+### Clock and determinism
 
-The engine keeps no balances. Cash, positions, reservations and P&L belong to the portfolio service, and the
-pre-trade reservation check is the risk service, which the external gateway calls before a command reaches the
-engine. In this standalone demo, `YOU`'s orders are not limited by a balance; `GET /api/account` lists its resting
-orders, read off the book.
+A seeded `SimClock` draws the exponential inter-arrival times and which symbol each arrival goes to; per-symbol
+seeded streams drive the reference price, entries, exits and actor choice. None of these read exchange replies or
+market data, so the `Arrival` stream (time, symbol, ENTER/EXIT/TURN, persona, reference price, shock) is
+**reproducible from the seed** (`MarketSimulatorTest` checks this with randomly failing exchange replies).
+
+Whole-system determinism is **not** preserved: what a persona does with its turn depends on the book it sees, and
+commands from many clients and gateways interleave over the network before the engine sequences them, so the
+engine's per-symbol `seq` differs run to run. This is expected for a networked exchange.
+
+## FIX gateway
+
+`fix-gateway` is the deliberate legacy bolt-on: Java written to Java 5 idioms, thread per socket, a hand-rolled
+tag=value codec, sequence numbers reset at logon and no resend. Logon `554` Password is an API key verified with
+auth-service `GET /internal/api-keys/verify`. A `NewOrderSingle` gets an order id from the same layout as the REST
+gateway's (instance bits `15`), goes through the same risk check (`/v1/orders/check`; market orders become LIMIT
+IOC at risk's protection price), and is published to `commands.<symbol>` with the ClOrdID as `correlationId`. The
+gateway tails `events.<symbol>` from the end and turns `OrderPlaced`, `TradeExecuted` (maker or taker side),
+`OrderCancelled`, `OrderAmended` and `OrderRejected` into ExecutionReports for the logged-on participant.
 
 ## Portfolio and risk services
 

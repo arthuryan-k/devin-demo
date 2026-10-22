@@ -21,6 +21,23 @@ jobs:
           cache-dependency-path: services/matching-engine/pom.xml
       - name: Unit tests and Redpanda integration tests
         run: mvn -B verify
+  java-services:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [simulator, fix-gateway]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: services/${{ matrix.service }}/pom.xml
+      - run: mvn -B verify
   node-services:
     runs-on: ubuntu-latest
     strategy:

@@ -171,6 +171,42 @@ services:
       history-writer: { condition: service_healthy }
     restart: unless-stopped
 
+  # Load generator and the exchange's only liquidity: persona traders, each with its own account, over the gateway.
+  simulator:
+    build:
+      context: ./services/simulator
+      args:
+        MAVEN_MIRROR: ${MAVEN_MIRROR:-}
+    environment:
+      GATEWAY_URL: http://gateway:8080
+      PORTFOLIO_URL: http://portfolio:8000
+      SEED: ${SIM_SEED:-42}
+      RATE: ${SIM_RATE:-20}
+      PARTICIPANTS: ${SIM_PARTICIPANTS:-4}
+    ports: ["8095:8095"]
+    depends_on:
+      gateway: { condition: service_healthy }
+      portfolio: { condition: service_started }
+    restart: unless-stopped
+
+  # Legacy FIX 4.4 order entry onto the same commands.<symbol> topics.
+  fix-gateway:
+    build:
+      context: ./services/fix-gateway
+      args:
+        MAVEN_MIRROR: ${MAVEN_MIRROR:-}
+    environment:
+      AUTH_URL: http://auth-service:8081
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      RISK_URL: http://risk:8000
+      KAFKA_BOOTSTRAP: redpanda:9092
+    ports: ["9878:9878"]
+    depends_on:
+      redpanda-init: { condition: service_completed_successfully }
+      auth-service: { condition: service_started }
+      risk: { condition: service_started }
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redpanda-data:
