@@ -1,4 +1,7 @@
-# Brokerage stack. `docker compose up --build` starts Postgres, applies db/migrations, then the services.
+# Brokerage stack: Postgres (system of record) + Flyway migrations, the Redpanda event bus, the standalone matching
+# engine and the TypeScript services.
+#   docker compose up --build
+# Kafka clients on the host use localhost:19092; containers use redpanda:9092.
 name: devin-demo
 
 services:
@@ -26,16 +29,55 @@ services:
       postgres: { condition: service_healthy }
 
   redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
-    command: ["redpanda", "start", "--mode", "dev-container", "--smp", "1", "--overprovisioned",
-              "--kafka-addr", "internal://0.0.0.0:9092,external://0.0.0.0:19092",
-              "--advertise-kafka-addr", "internal://redpanda:9092,external://localhost:19092"]
-    ports: ["19092:19092"]
+    image: redpandadata/redpanda:v24.2.18
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30
+
+  # Topics are created by the matching engine with exactly one partition each; never auto-create.
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.18
+    entrypoint: ["rpk", "cluster", "config", "set", "auto_create_topics_enabled", "false", "-X", "admin.hosts=redpanda:9644"]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: "no"
+
+  matching-engine:
+    build:
+      context: services/matching-engine
+      args:
+        MAVEN_MIRROR: ${MAVEN_MIRROR:-}
+    image: devin-demo/matching-engine:latest
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      reference-data-service:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      # Hosted symbols come from the reference-data service; set SYMBOLS to override.
+      REFDATA_URL: http://reference-data-service:8082
+      JOURNAL_PATH: /data/journal
+      SNAPSHOT_EVERY: "10000"
+    volumes:
+      - engine-journal:/data/journal
+    restart: unless-stopped
 
   auth-service:
     build: ./services/auth-service
@@ -68,3 +110,5 @@ services:
 
 volumes:
   pgdata:
+  redpanda-data:
+  engine-journal:

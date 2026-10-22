@@ -13,10 +13,16 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol 
 |---|---|
 | `services/` | One directory per deployable service; each builds on its own toolchain. |
 | `services/matching-engine/` | Java 17 / Maven: the exchange core (one matching engine, Disruptor pipeline and journal per symbol), participant HTTP API, market-data stream, market simulator and the TeaVM browser build. |
+| `schemas/bus/` | JSON Schemas of the event-bus topics (`commands.<symbol>`, `events.<symbol>`, `marketdata.<symbol>`). |
+| `services/auth-service/` | TypeScript / Fastify: signup, login (JWT), API keys and participant accounts in Postgres. |
+| `services/reference-data-service/` | TypeScript / Fastify: the listed symbols and their trading parameters over REST. |
+| `services/history-writer/` | TypeScript / KafkaJS: writes `events.<symbol>` order lifecycle and fills to Postgres. |
+| `db/migrations/` | Flyway SQL migrations for the brokerage database. |
+| `docker-compose.yml` | Postgres, migrations, the Redpanda (Kafka API) event bus, the matching engine and the services above. |
 | `ARCHITECTURE.md` | Internals of the services. |
 | `.github/workflows/` | CI: tests the matching engine and deploys the live demo to GitHub Pages. |
 
-Listed symbols: `ACME`, `GLOBX`, `INITD`, `NVTA`. Every book starts empty, with no liquidity and no price; the demo
+Listed symbols (served by the reference-data service, built in otherwise): `ACME`, `GLOBX`, `INITD`, `NVTA`. Every book starts empty, with no liquidity and no price; the demo
 and simulator currently trade `ACME`.
 
 ## What is this
@@ -63,6 +69,9 @@ KEY=$(curl -s -d name=alice localhost:8080/participants/register | sed 's/.*"api
 curl -s -H "X-Api-Key: $KEY" -d 'side=BUY&type=LIMIT&price=99.50&qty=10' localhost:8080/api/orders
 ```
 
+- With the auth service (`AUTH_SERVICE_URL`), registrations are real accounts in Postgres, and a signed-up user's
+  session (`POST /auth/signup` or `/auth/login` on the [auth service](services/auth-service/README.md)) trades as
+  that account.
 - A missing or unknown key gets `401`; you can only amend or cancel your own orders.
 - Each participant is limited to 200 messages/sec (burst 400) and 100 open orders; breaches get `429`.
 - After 100 violations a participant is blocked with `403`. `POST /api/reset` clears the counters.
@@ -97,4 +106,33 @@ From `services/matching-engine/`:
 mvn test                              # engine, simulator, account, server and property tests
 mvn compile exec:java                 # local server at http://localhost:8080/ (SIM_SEED=42 for a fixed seed)
 scripts/build-pages.sh                # static browser build into target/pages
+mvn verify                            # plus the Redpanda integration tests (needs Docker)
 ```
+
+### On the event bus
+
+From the repo root, `docker compose up --build` starts a Redpanda broker and the matching engine as a standalone
+service: send Place / Cancel / Amend JSON to `commands.<SYMBOL>` and read the sequenced results from
+`events.<SYMBOL>` and L2 market data from `marketdata.<SYMBOL>` (Kafka at `localhost:19092`):
+
+```
+docker compose exec redpanda rpk topic produce commands.ACME -k ACME
+{"type":"Place","participantId":7,"correlationId":"c-1","side":"BUY","price":10000,"qty":5}
+docker compose exec redpanda rpk topic consume events.ACME
+```
+
+Topic formats: [`schemas/bus/`](schemas/bus/); topology and recovery: [ARCHITECTURE.md](ARCHITECTURE.md#event-bus).
+
+### Full brokerage stack
+
+The same `docker compose up --build` also starts Postgres (with the migrations applied), the auth service on `:8081`,
+the reference-data service on `:8082` and the history writer:
+
+```
+curl -s localhost:8082/symbols
+curl -s -H 'content-type: application/json' -d '{"username":"alice","password":"correct-horse"}' localhost:8081/auth/signup
+docker compose exec postgres psql -U brokerage -c 'select * from trades_history order by id desc limit 5'
+```
+
+To run the server on top of them, start it with `AUTH_SERVICE_URL=http://localhost:8081 REFDATA_URL=http://localhost:8082 mvn compile exec:java`.
+Service ownership and contracts are in [ARCHITECTURE.md](ARCHITECTURE.md#brokerage-services-and-postgres).

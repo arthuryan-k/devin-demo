@@ -19,8 +19,10 @@ jobs:
           java-version: '17'
           cache: maven
           cache-dependency-path: services/matching-engine/pom.xml
-      - run: mvn -B test
-      - run: scripts/build-pages.sh
+      - name: Unit tests and Redpanda integration tests
+        run: mvn -B verify
+      - name: Browser build
+        run: scripts/build-pages.sh
 
   node-services:
     runs-on: ubuntu-latest
@@ -48,5 +50,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose config -q
+      - run: docker compose config --quiet
       - run: docker compose build

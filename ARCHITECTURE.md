@@ -3,7 +3,7 @@
 [Back to README](README.md)
 
 Internals of the matching engine service (`services/matching-engine/`): the per-symbol exchange core, the Disruptor
-pipeline, the participant API, the market-data feed and the market simulator.
+pipeline, the event bus, the participant API, the market-data feed and the market simulator.
 
 ## Matching engine
 
@@ -126,14 +126,192 @@ flowchart LR
   waiting HTTP caller's `CompletableFuture`, keyed by sequence) and the simulator's read model. A slow handler
   only falls behind. Matching waits only once a handler lags by a whole output ring, and producers then see `BUSY`.
 
+## Event bus
+
+Between services, the matching engine talks over a Kafka-compatible event bus
+([Redpanda](https://redpanda.com/), single broker, `docker-compose.yml` at the repo root). The standalone service
+`orderbook.bus.EngineService` (image built from `services/matching-engine/Dockerfile`) runs one `SymbolBus` per
+listed symbol: it consumes `commands.<symbol>`, feeds that symbol's Disruptor input ring and publishes the output
+ring to `events.<symbol>` and `marketdata.<symbol>`. The bus is the transport; each symbol's journal stays the local
+durable log. (The in-process demo server, `DemoServer`, still feeds the rings directly.)
+
+### Topics
+
+| Topic | Producer → consumer | Record value | Retention |
+|---|---|---|---|
+| `commands.<symbol>` | gateway / clients → matching engine | one Place, Cancel or Amend ([`commands.schema.json`](schemas/bus/commands.schema.json)) | forever |
+| `events.<symbol>` | matching engine → gateway, history writer, … | one record per sequenced command: `seq`, `participantId`, echoed `correlationId`, `ts`, `commandOffset`, the `command` and its `events` array ([`events.schema.json`](schemas/bus/events.schema.json)) | forever |
+| `marketdata.<symbol>` | matching engine → market-data consumers | the [Market data](#market-data) snapshot / delta messages ([`marketdata.schema.json`](schemas/bus/marketdata.schema.json)) | 24 h |
+| `commands.<symbol>.dlq` | matching engine → operators | command records that failed to decode, unchanged, with `error` and `source.offset` headers | default |
+
+- **Encoding:** JSON (UTF-8), JSON Schema 2020-12 files in [`schemas/bus/`](schemas/bus/), schema version `v: 1`.
+  JSON keeps the wire format readable with `rpk` and consumable from any language without generated code; the codec
+  (`orderbook.bus.BusCodec`) rejects unknown fields so a typo fails loudly rather than being ignored. Prices are
+  integer ticks (100 = 1.00), quantities integers, enums upper-case strings.
+- **Partitioning and ordering:** every topic has exactly one partition and records are keyed by symbol, so each
+  symbol's commands, events and market data are each totally ordered. The engine creates its topics at startup and
+  refuses to run if one has more than one partition; compose disables auto-creation.
+- **Correlation:** `correlationId` is an optional opaque string on a command, echoed unchanged (or `null`) on that
+  command's events record together with `participantId` and `seq`, so a gateway can do request/response over the bus.
+- **Order ids:** a client-supplied `orderId` on Place is kept; a reused one is rejected with `DUPLICATE_ORDER_ID`.
+  When absent the engine assigns one, striped by symbol (`id % 16` = listing index + 1) so ids stay unique
+  exchange-wide while each symbol derives its next id from its own state.
+- **Invalid commands** go to `commands.<symbol>.dlq` and consume no `seq`. Commands the engine rejects
+  (unknown order, bad price, …) are sequenced and published like any other, with an `OrderRejected` event.
+
+```mermaid
+flowchart LR
+    GW["Gateway / clients"] -- "Place / Cancel / Amend<br/>key = symbol" --> CMD["commands.SYMBOL<br/>1 partition"]
+    CMD --> ING["SymbolBus ingress<br/>1 consumer thread per symbol<br/>only producer of the ring"]
+    ING -- "malformed" --> DLQ["commands.SYMBOL.dlq"]
+    ING --> IN["Input ring"]
+    IN --> ENG["Engine<br/>1 thread"]
+    ENG --> OUT["Output ring"]
+    OUT --> J["Journal<br/>local durable log + snapshots"]
+    OUT --> EV["Events publisher<br/>waits for the journal"]
+    OUT --> MD["MarketDataPublisher"]
+    EV --> EVT["events.SYMBOL<br/>1 partition"]
+    MD --> MDT["marketdata.SYMBOL<br/>1 partition"]
+    EVT --> C1["Gateway responses"]
+    EVT --> C2["History writer"]
+    MDT --> C3["Market-data consumers"]
+```
+
+### Single writer and sequencing
+
+One consumer thread per symbol reads `commands.<symbol>` partition 0 and is the only producer of that symbol's input
+ring, so ring order is topic order and each command gets the next global `seq` (contiguous from 0, continuing across
+restarts). A full input ring is backpressure: the consumer waits for a slot instead of rejecting with `BUSY`. The
+output ring fans out to three independent consumers: the journal writer, the events publisher and the market-data
+publisher. The events publisher sends a command's record only after the journal has written it, through one
+idempotent producer (`acks=all`); consumer offsets on `commands.<symbol>` are committed once events are acknowledged
+(informational: recovery does not rely on them).
+
+### Restart and recovery
+
+The engine is crash-only: any bus or journal error exits the process, and a restart recovers. At startup each symbol:
+
+1. reads the last `events.<symbol>` record (seq `P`, and its `commandOffset`) and the journal's last seq `J`;
+2. rebuilds the engine as of `R = min(P, J)` from the journal (`Journal.load(R)`: newest snapshot at or before
+   `R`, plus the entries after it) and starts a pipeline whose first seq is `R + 1`;
+3. resumes consuming `commands.<symbol>` right after the command sequenced at `R` (the `commandOffset` of the
+   events record for `R`).
+
+Commands are re-processed deterministically, so for seqs up to `J` the re-derived command is checked against the
+journal instead of re-journaled (a mismatch is fatal), and seqs up to `P` are not re-published. Every seq therefore
+reaches `events.<symbol>` exactly once, in order, whether the engine crashed before journaling, after journaling but
+before publishing, or lost its journal entirely (then `R = -1` and the journal is rebuilt from the retained
+commands topic). `marketdata.<symbol>` starts each run with a snapshot as of `R` and then one delta per seq; a fresh
+snapshot every 1000 seqs lets a consumer resync after retention truncates the topic.
+
+### Running it
+
+```
+docker compose up --build                 # Redpanda + matching engine (journal in the engine-journal volume)
+docker compose exec redpanda rpk topic produce commands.ACME -k ACME
+{"type":"Place","participantId":7,"correlationId":"c-1","side":"SELL","price":10000,"qty":5}
+docker compose exec redpanda rpk topic consume events.ACME
+```
+
+Host clients use `localhost:19092`. Configuration (environment): `KAFKA_BOOTSTRAP_SERVERS`, `SYMBOLS`,
+`JOURNAL_PATH`, `SNAPSHOT_EVERY`, `TOPIC_REPLICATION`. `MatchingEngineBusIT` (Testcontainers Redpanda, run by
+`mvn verify`) publishes to `commands.ACME`, consumes `events.ACME` and checks matching, `seq` order, correlation,
+the DLQ, market data, restart without republishing, and rebuilding a lost journal from the bus.
+
+## Brokerage services and Postgres
+
+Postgres is the system of record for identities, accounts, reference data and history. Every service owns its own
+tables, and the matching engine never touches the database: it stays an in-memory, journal-backed sequencer.
+
+```mermaid
+flowchart LR
+    browser["Browser / API clients"] -->|"signup, login, API keys"| auth["auth-service (TS, Fastify)"]
+    browser -->|"orders (X-Api-Key or ob_session JWT)"| engine["matching-engine (Java)"]
+    engine -->|"verify key / session, register"| auth
+    engine -->|"GET /symbols at startup"| refdata["reference-data-service (TS, Fastify)"]
+    engine -->|"events.<symbol>"| bus["Redpanda"]
+    bus --> writer["history-writer (TS, KafkaJS)"]
+    auth --> pg[("Postgres")]
+    refdata --> pg
+    writer --> pg
+    migrate["db-migrate (Flyway)"] --> pg
+```
+
+| Component | Stack | Owns | Doc |
+|---|---|---|---|
+| `db/migrations` | Flyway 10, plain SQL | schema history for every service | below |
+| `auth-service` | TypeScript, Node 22, Fastify 5, `pg`, bcrypt, `jose` | `users`, `accounts`, `api_keys` | [README](services/auth-service/README.md) |
+| `reference-data-service` | TypeScript, Node 22, Fastify 5, `pg` | `reference_data` (read side) | [README](services/reference-data-service/README.md) |
+| `history-writer` | TypeScript, Node 22, KafkaJS, `pg` | `orders_history`, `trades_history` | [README](services/history-writer/README.md) |
+
+TypeScript and Fastify are a common choice for identity and edge services, and they share one toolchain with the
+gateway and frontend. The migrations are plain SQL, so a service in any language (such as the Python portfolio
+service) adds its own `V<n>__*.sql` file to the same history. Compose runs `db-migrate` as a one-shot job, and every
+database client waits for it to complete successfully.
+
+### Schema
+
+- **`users`**: the username is unique case-insensitively (`lower(username)`). `kind` is `human` or `simulated`.
+  `password_hash` is a bcrypt hash, and it is null only for simulated users, who authenticate with API keys.
+- **`accounts`**: one per user. `participant_id` comes from `participant_id_seq`, which starts at 1001. Participant 1
+  stays the anonymous `YOU` seat, and 0 means no participant. `starting_cash` is the sum of the active
+  `initial_cash_grant` values at signup.
+- **`api_keys`**: `key_hash` is the SHA-256 of the key (32 bytes, `BYTEA`), and the plaintext `ob_<48 hex>` is
+  returned only when the key is issued. The table also keeps `key_prefix` for display, `label`, `last_used_at` and
+  `revoked_at`.
+- **`reference_data`**: `symbol`, `name`, `currency`, `tick_size NUMERIC(18,8)`, `lot_size`,
+  `initial_cash_grant NUMERIC(18,2)`, `active` and `display_order`. `V2` seeds ACME, GLOBX, INITD and NVTA.
+- **`orders_history` / `trades_history`**: append-only. Each row is unique on `(symbol, seq, event_index)`, where
+  `seq` is the engine's per-symbol sequence and `event_index` is the event's position in the `events.<symbol>`
+  record. Prices are integer ticks (`price_ticks`), and extra fields go in `details JSONB`.
+
+### Auth contract
+
+- Signup and login (`POST /auth/signup`, `POST /auth/login`, with JSON `{username,password}`) return an RS256 JWT and
+  also set it as the `HttpOnly` `ob_session` cookie. The claims are `sub` (user id), `participantId`, `accountId`,
+  `username` and `kind`, with issuer `devin-demo-auth` and audience `devin-demo`. Tokens expire after 1 h by default.
+- Verifiers check the token locally against `GET /.well-known/jwks.json` (matching on `kid`), so they need no shared
+  secret and no call per request. `JWT_PRIVATE_KEY` (PKCS#8 PEM) pins the signing key. Without it, each start
+  generates a new key, and tokens issued before the restart stop verifying.
+- Unknown usernames and wrong passwords get the same `401`.
+- Internal lookups are `GET /internal/api-keys/verify` with the key in the `X-Api-Key` header (headers stay out of
+  access logs) and `GET /internal/participants/{id}`. When `INTERNAL_TOKEN` is set, these routes require the
+  matching `X-Internal-Token`.
+- `POST /participants/register` creates a simulated user, its account and its first API key in one transaction. The
+  simulator's participants get real accounts this way.
+
+### Reference data in the engine
+
+`Symbols.ALL` is now only the built-in fallback. `EngineService` hosts `SYMBOLS` if it is set, otherwise the
+active listing from `REFDATA_URL` (fetched with retries while compose starts), and otherwise `Symbols.ALL`.
+`DemoServer` works the same way and serves the listing at `GET /api/symbols`, which the page uses for its header. A
+hosted symbol only needs to be a well-formed code (`[A-Z][A-Z0-9]{0,9}`, `Symbols.requireValid`); it does not have
+to appear in `Symbols.ALL`.
+
+### History
+
+`history-writer` subscribes to `^events\.[A-Z][A-Z0-9]{0,9}$` in consumer group `history-writer`. It maps each record
+(`schemas/bus/events.schema.json`) to rows. `OrderPlaced`, `OrderAmended`, `OrderCancelled` and `OrderRejected`
+become `orders_history` rows, and `TradeExecuted` becomes a `trades_history` row. A record's rows are written in one
+transaction with `ON CONFLICT DO NOTHING`, and the offset is committed only afterwards. Redelivery is therefore
+idempotent, and the history matches the engine's sequence exactly. Records that fail to parse are logged and skipped
+as poison messages. A database error stops consumption without committing, so the record is retried.
+
 ## Participant API
 
 Endpoints and an example are in the [README](README.md#participant-api).
 
-- **Authentication:** keys live in an in-memory registry that maps each key to its participant ID. A missing or
-  unknown key gets `401`, and touching another participant's order is rejected with `NOT_OWN_OPEN_ORDER`.
-  The browser is `YOU` (participant 1). The page sets an `HttpOnly` session cookie holding a reserved key that can
-  never be registered.
+- **Authentication:** the server resolves callers through a `ParticipantDirectory`. With `AUTH_SERVICE_URL` set it
+  is `AuthServiceDirectory`, which looks up API keys (`GET /internal/api-keys/verify`) and session JWTs
+  (`GET /auth/me`) against the [auth service](#brokerage-services-and-postgres) and registers participants there.
+  Positive lookups are cached for 30 s (`auth.cacheSeconds`), and unknown keys for a tenth of that. Labels are
+  fetched in the background so the market-data path never blocks. If the auth service is unreachable, callers get
+  `503 AUTH_UNAVAILABLE` instead of `401`. Without `AUTH_SERVICE_URL` (tests and the in-page build), the in-memory
+  `ParticipantRegistry` is used. A missing or unknown key gets `401`, and touching another participant's order is
+  rejected with `NOT_OWN_OPEN_ORDER`.
+- **Browser sessions:** someone who signed up or logged in carries the auth service's JWT in the `ob_session`
+  cookie and trades as their own account, and the page never overwrites that cookie. Anonymous visitors get the
+  local reserved key for `YOU` (participant 1), which can never be registered.
 - **Admission control:** checks run in the gateway before anything is published to the input ring. Each
   participant has a token bucket of 200 messages/sec with a burst of 400 (orders, cancels and amends each cost one)
   and may have at most 100 open orders. A breach gets `429` with reason `RATE_LIMITED` or `MAX_OPEN_ORDERS`.

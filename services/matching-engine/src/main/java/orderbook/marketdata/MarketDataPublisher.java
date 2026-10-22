@@ -12,6 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.LongFunction;
 
 import orderbook.Command;
+import orderbook.EngineState;
 import orderbook.Event;
 import orderbook.Order;
 import orderbook.OrderBook;
@@ -132,6 +133,29 @@ public final class MarketDataPublisher implements ResultHandler {
 
     public synchronized String snapshot() {
         return snapshot("connect");
+    }
+
+    /**
+     * Seeds the shadow book from a recovered engine state as of {@code seq} (no trade or event history), so the
+     * next result applied is {@code seq + 1}. Subscribers get a {@code "restore"} snapshot.
+     */
+    public synchronized void restore(EngineState state, long seq) {
+        orders.clear();
+        bids.clear();
+        asks.clear();
+        recentTrades.clear();
+        recentEvents.clear();
+        tradeN = 0;
+        for (List<EngineState.RestingOrder> side : List.of(state.bids(), state.asks())) {
+            for (EngineState.RestingOrder r : side) {
+                orders.put(r.id(), new Resting(r.side(), r.price(), r.qtyRemaining(), r.participantId()));
+                long[] level = (r.side() == Side.BUY ? bids : asks).computeIfAbsent(r.price(), p -> new long[2]);
+                level[0] += r.qtyRemaining();
+                level[1]++;
+            }
+        }
+        this.seq = seq;
+        broadcast(snapshot("restore"));
     }
 
     /** Last applied global sequence, or -1. */

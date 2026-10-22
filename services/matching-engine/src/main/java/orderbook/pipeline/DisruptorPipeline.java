@@ -19,6 +19,7 @@ import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
 
 import orderbook.Command;
+import orderbook.MatchingEngine;
 import orderbook.Symbols;
 
 /**
@@ -50,6 +51,7 @@ public final class DisruptorPipeline implements Pipeline {
 
     private final ThreadLocal<Args> args = ThreadLocal.withInitial(Args::new);
     private final EngineStage engine;
+    private long firstSeq; // set once in the constructor, before any producer or thread can read it
     private final ResponseRouter router = new ResponseRouter();
     private final Disruptor<CommandEvent> input;
     private final RingBuffer<CommandEvent> inputRing;
@@ -60,21 +62,22 @@ public final class DisruptorPipeline implements Pipeline {
     private volatile boolean closed;
 
     private final EventTranslatorTwoArg<CommandEvent, Command, Args> commandTranslator = (event, seq, command, a) -> {
+        long global = seq + this.firstSeq;
         if (a.awaited) {
-            router.expect(seq);
+            router.expect(global);
         }
-        event.set(seq, a.participantId, command, false, a.awaited);
-        a.claimed = seq;
+        event.set(global, a.participantId, command, false, a.awaited);
+        a.claimed = global;
     };
     private final EventTranslatorTwoArg<CommandEvent, Command, Args> resetTranslator =
             (event, seq, command, a) -> {
-                event.set(seq, 0, null, true, false);
-                a.claimed = seq;
+                event.set(seq + this.firstSeq, 0, null, true, false);
+                a.claimed = seq + this.firstSeq;
             };
     private final EventTranslatorTwoArg<CommandEvent, Command, Args> snapshotTranslator =
             (event, seq, command, a) -> {
-                event.set(seq, 0, null, false, true, false);
-                a.claimed = seq;
+                event.set(seq + this.firstSeq, 0, null, false, true, false);
+                a.claimed = seq + this.firstSeq;
             };
     private final EventTranslatorTwoArg<ResultEvent, CommandEvent, EngineStage> resultTranslator =
             (out, seq, in, stage) -> stage.process(in, out);
@@ -98,7 +101,24 @@ public final class DisruptorPipeline implements Pipeline {
      * sizes must be powers of two. Starts the engine thread and the response router immediately.
      */
     public DisruptorPipeline(String symbol, int inputSize, int outputSize) {
-        engine = new EngineStage(Objects.requireNonNull(symbol, "symbol"));
+        this(new EngineStage(Objects.requireNonNull(symbol, "symbol")), 0, inputSize, outputSize);
+    }
+
+    /**
+     * A pipeline that resumes {@code initial} (e.g. recovered from a journal): its first command gets global sequence
+     * {@code firstSeq}, so sequences continue where the recovered engine left off.
+     */
+    public DisruptorPipeline(MatchingEngine initial, long firstSeq, int inputSize, int outputSize) {
+        this(new EngineStage(Objects.requireNonNull(initial, "initial")), firstSeq, inputSize, outputSize);
+    }
+
+    private DisruptorPipeline(EngineStage stage, long firstSeq, int inputSize, int outputSize) {
+        if (firstSeq < 0) {
+            throw new IllegalArgumentException("firstSeq must be >= 0");
+        }
+        engine = stage;
+        this.firstSeq = firstSeq;
+        String symbol = stage.symbol();
         AtomicInteger n = new AtomicInteger();
         threads = r -> {
             Thread t = new Thread(r, "pipeline-" + symbol + "-" + n.incrementAndGet());
@@ -174,7 +194,7 @@ public final class DisruptorPipeline implements Pipeline {
 
     @Override
     public long lastSequence() {
-        return inputRing.getCursor();
+        return inputRing.getCursor() + firstSeq;
     }
 
     /** Free input slots right now. */
@@ -184,7 +204,7 @@ public final class DisruptorPipeline implements Pipeline {
 
     /** Sequence of the newest result the engine has published to the output ring, or -1. */
     public long engineSequence() {
-        return outputRing.getCursor();
+        return outputRing.getCursor() + firstSeq;
     }
 
     /** Drains what was already published (bounded wait), then stops every thread. */
