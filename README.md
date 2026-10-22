@@ -94,16 +94,16 @@ curl -s -H "X-Api-Key: $KEY" -d 'side=BUY&type=LIMIT&price=99.50&qty=10' localho
 
 ## Your account
 
-- Buys reserve cash and sells reserve shares until the order fills or is cancelled.
-- Cash and shares can never go negative, so short selling is not allowed.
-- Session gain/loss is tracked at average cost: realized on sells, unrealized on held shares marked at the last trade.
+Balances live outside the engine. The portfolio service holds each account's shared cash, per-symbol positions and
+P&L, and the risk service reserves cash or shares before an order reaches the engine. In this standalone demo, `YOU`
+trades without a balance check.
 
 ## Build and run
 
 From `services/matching-engine/`:
 
 ```
-mvn test                              # engine, simulator, account, server and property tests
+mvn test                              # engine, simulator, server and property tests
 mvn compile exec:java                 # local server at http://localhost:8080/ (SIM_SEED=42 for a fixed seed)
 scripts/build-pages.sh                # static browser build into target/pages
 mvn verify                            # plus the Redpanda integration tests (needs Docker)

@@ -41,7 +41,7 @@ public final class BrowserMain {
 
     public static void main(String[] args) {
         DemoApp app = new DemoApp(new Simulator(new Random().nextLong(), Simulator.DEFAULT_START_REFERENCE_TICKS,
-                new BrowserScheduler(), new InlinePipeline()), null);
+                new BrowserScheduler(), new InlinePipeline()));
         export((method, path, query, body) -> {
             DemoApp.Reply reply = app.handle(method, path, query, body, app.userKey());
             return reply.status() + "\n" + reply.json();

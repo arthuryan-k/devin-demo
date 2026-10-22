@@ -103,7 +103,7 @@ diagram shows one symbol's pipeline; every symbol has an identical, independent 
 flowchart LR
     HTTP["HTTP order / cancel / amend"] --> GW
     SIM["Simulator (personas)"] --> GW
-    GW["Gateway<br/>auth + admission control<br/>account reservation check<br/>full ring: BUSY"] -- "tryPublishEvent" --> IN
+    GW["Gateway<br/>auth + admission control<br/>full ring: BUSY"] -- "tryPublishEvent" --> IN
     IN["Input ring<br/>CommandEvent<br/>slot seq = global seqNum"] --> ENG
     ENG["Engine<br/>1 thread, matching only"] --> OUT
     OUT["Output ring<br/>ResultEvent, same seq"] --> J["JournalHandler<br/>journal + snapshots"]
@@ -116,7 +116,7 @@ flowchart LR
 
 - **Input ring (sequencer):** a preallocated, power-of-two `CommandEvent` ring with multiple producers. Every API
   call (browser, external clients and simulated participants alike) is authenticated and admission-checked first
-  (see [Participant API](#participant-api)), then `Gateway` runs the user's account reservation check and claims a
+  (see [Participant API](#participant-api)), then `Gateway` claims a
   slot with `tryPublishEvent()`. The slot's sequence is the command's `seqNum` within that symbol.
 - **Backpressure:** a full ring never blocks a producer; the command is rejected with `OrderRejected` reason
   `BUSY` and its reservation is released.
@@ -325,7 +325,7 @@ Endpoints and an example are in the [README](README.md#participant-api).
   and may have at most 100 open orders. A breach gets `429` with reason `RATE_LIMITED` or `MAX_OPEN_ORDERS`.
 - **Blocking:** after 100 violations a participant gets `403 BLOCKED` on every call. `POST /api/reset` clears
   the counters.
-- Responses carry the order ID, the global `seq` and the engine's events. `YOU` also gets its book and account view.
+- Responses carry the order ID, the global `seq` and the engine's events. `YOU` also gets its book and open orders.
 
 ## Market data
 
@@ -339,7 +339,7 @@ Endpoints and an example are in the [README](README.md#participant-api).
 that applies results, so there is no snapshot/subscribe race. After snapshot `S`, deltas arrive as `S+1`, `S+2`, …
 with no holes. Any other sequence is a gap, and the client resyncs from a fresh snapshot. A slow client's backlog
 is replaced by a single snapshot. The page keeps a local book replica from the snapshot plus deltas, and the
-event log and trade tape filter the same stream. Account state is polled from `GET /api/account`.
+event log and trade tape filter the same stream. YOU's open orders are polled from `GET /api/account`.
 
 ## Market simulator
 
@@ -355,6 +355,50 @@ registers through `POST /participants/register` and trades over HTTP with its ow
 
 ## Your account (`YOU`)
 
-Every order from `YOU` is checked against its cash and share balance before it reaches the engine (the `Gateway`
-account reservation check above). Buys reserve cash and sells reserve shares until the order fills or is cancelled;
-fills settle at the trade price, and any unused reservation is refunded.
+The engine keeps no balances. Cash, positions, reservations and P&L belong to the portfolio service, and the
+pre-trade reservation check is the risk service, which the external gateway calls before a command reaches the
+engine. In this standalone demo, `YOU`'s orders are not limited by a balance; `GET /api/account` lists its resting
+orders, read off the book.
+
+## Portfolio and risk services
+
+Account money lives outside the engine, in two Python/FastAPI services over one Postgres schema, `portfolio`
+(Flyway migration `V3__portfolio_ledger.sql`): [`services/portfolio`](services/portfolio/README.md), the
+system of record and settlement consumer, and [`services/risk`](services/risk/README.md), the synchronous
+pre-trade check.
+
+```mermaid
+flowchart LR
+    G["Gateway"] -- "1. POST /v1/orders/check" --> R["risk"]
+    R -- "reserve (one txn, FOR UPDATE)" --> DB[("Postgres: portfolio.*")]
+    G -- "2. publish if approved" --> C["commands.SYMBOL"]
+    C --> E["Matching engine"]
+    E --> EV["events.SYMBOL"]
+    EV --> P["portfolio consumer"]
+    P -- "settle fills, cancels, rejects + offset (one txn)" --> DB
+    P -- "GET /v1/accounts/ID" --> UI["Frontend"]
+```
+
+- **Ledger model:** `accounts` (one shared `cash` / `reserved_cash` per participant), `positions` (`shares`,
+  `reserved_shares`, `cost_basis`, `realized_pnl` per account and symbol), `reservations` (one per approved order,
+  keyed `(symbol, order_id)`, with status `PENDING` -> `OPEN` -> `FILLED`/`CANCELLED`/`REJECTED`, or `RELEASED` when
+  the command never reached the engine), `fills`, `marks` (last trade per symbol) and `consumer_offsets`. Amounts are
+  BIGINT ticks. CHECK constraints keep every balance and reservation non-negative and reservations within holdings,
+  so a bug cannot commit a negative balance.
+- **Atomic reservations:** a check runs in one READ COMMITTED transaction that locks the account row, then the
+  position row, checks available = held - reserved, and inserts the reservation. Every writer, including settlement,
+  locks accounts before positions and reservations, in ascending id order. Risk retries the rare deadlock or
+  duplicate-id race. Concurrent checks on one account serialize on its cash row; other accounts don't contend.
+- **Buys reserve at the limit:** a fill at a better price releases `limit * qty` and debits `price * qty`, which
+  refunds the difference. Market buys reserve at a protection price (reference + collar) that the gateway sends as
+  the order's limit.
+- **Amends** reserve the extra amount as `pending_*` until `OrderAmended` confirms them (then the order's reservation
+  is re-sized) or `OrderRejected` drops them. Fills that arrive in between settle against the order's current
+  reservation.
+- **Settlement:** the consumer reads `^events\..*`. Each message is applied in one transaction with its offset
+  (`consumer_offsets`), so redelivery after a crash is a no-op. Ownership comes from the reservation, so events need
+  no participant ids. Trades on orders without a reservation only update the mark.
+- **Invariant audit:** `ledger.invariant_violations()` checks every account's reserved cash and reserved shares
+  against the sum of its live reservations, and checks for negative or over-reserved balances. Tests run it after
+  randomized multi-account, multi-symbol flows against a reference matcher.
+

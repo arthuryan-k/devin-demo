@@ -31,8 +31,7 @@ class DemoServerTest {
 
     @BeforeEach
     void start() throws Exception {
-        server = new DemoServer(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), new Simulator(1),
-                () -> new Account(DemoServer.USER, 10_000_00, 100));
+        server = new DemoServer(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), new Simulator(1));
         server.start();
         // The page sets the browser session cookie (the reserved "YOU" key) that authenticates /api/orders.
         client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + "/")).build(),
@@ -90,8 +89,6 @@ class DemoServerTest {
         assertTrue(book.contains("\"bestBid\":null"), book);
         assertTrue(book.contains("\"tradeCount\":1"), book);
         assertTrue(book.contains("\"lastTradePrice\":100.00"), book);
-        assertTrue(book.contains("\"cash\":9600.00,\"reservedCash\":0.00,\"availableCash\":9600.00,\"sharesOwned\":104"), book);
-        assertTrue(book.contains("\"equity\":20000.00"), book);
 
         String theirs = body("DELETE", "/api/orders/1", null);
         assertTrue(theirs.contains("\"type\":\"AccountRejected\",\"orderId\":1"), theirs);
@@ -99,16 +96,13 @@ class DemoServerTest {
 
         String rest = body("POST", "/api/orders", "side=BUY&price=99.50&qty=10");
         assertTrue(rest.contains("\"type\":\"OrderPlaced\",\"orderId\":3,\"participant\":\"YOU\",\"side\":\"BUY\",\"price\":99.50"), rest);
-        assertTrue(rest.contains("\"reservedCash\":995.00"), rest);
         assertTrue(rest.contains("\"participant\":\"YOU\",\"mine\":true"), rest);
 
         String amended = body("PATCH", "/api/orders/3", "qty=4");
         assertTrue(amended.contains("\"type\":\"OrderAmended\""), amended);
-        assertTrue(amended.contains("\"reservedCash\":398.00"), amended);
 
         String cancelled = body("DELETE", "/api/orders/3", null);
         assertTrue(cancelled.contains("\"type\":\"OrderCancelled\",\"orderId\":3,\"participant\":\"YOU\",\"cancelledQty\":4"), cancelled);
-        assertTrue(cancelled.contains("\"reservedCash\":0.00"), cancelled);
     }
 
     @Test
@@ -116,29 +110,10 @@ class DemoServerTest {
         counterparty(1, Side.SELL, 99_50, 5);
         String res = body("POST", "/api/orders", "side=BUY&type=MARKET&timeInForce=IOC&qty=2");
         assertTrue(res.contains("\"price\":99.50,\"qty\":2"), res);
-        assertTrue(res.contains("\"sharesOwned\":102"), res);
 
         counterparty(100, Side.BUY, 99_00, 5);
         String sell = body("POST", "/api/orders", "side=SELL&type=market&timeInForce=ioc&qty=3");
         assertTrue(sell.contains("\"price\":99.00,\"qty\":3"), sell);
-        assertTrue(sell.contains("\"sharesOwned\":99"), sell);
-    }
-
-    @Test
-    void accountRejectionsAreTicketErrorsAndFeedEvents() throws Exception {
-        String funds = body("POST", "/api/orders", "side=BUY&price=100&qty=1000");
-        assertTrue(funds.contains("\"type\":\"AccountRejected\""), funds);
-        assertTrue(funds.contains("\"reason\":\"INSUFFICIENT_FUNDS\""), funds);
-        assertTrue(funds.contains("\"bids\":[]"), funds);
-
-        String shares = body("POST", "/api/orders", "side=SELL&price=100&qty=101");
-        assertTrue(shares.contains("\"reason\":\"INSUFFICIENT_SHARES\""), shares);
-
-        String feed = body("GET", "/api/book?since=0", null);
-        assertTrue(feed.contains("{\"seq\":1,\"type\":\"AccountRejected\""), feed);
-        assertTrue(feed.contains("\"seq\":2,\"type\":\"AccountRejected\""), feed);
-        String none = body("GET", "/api/book?since=2", null);
-        assertTrue(none.contains("\"events\":[]"), none);
     }
 
     @Test
@@ -150,8 +125,6 @@ class DemoServerTest {
         String dup = body("POST", "/api/orders", "side=SELL&price=105&qty=5&id=7");
         assertTrue(dup.contains("\"reason\":\"DUPLICATE_ORDER_ID\""), dup);
         assertTrue(dup.contains("\"nextOrderId\":8"), dup);
-        assertTrue(dup.contains("\"reservedCash\":500.00"), "the resting order keeps its reservation: " + dup);
-        assertTrue(dup.contains("\"reservedShares\":0"), dup);
     }
 
     @Test
@@ -201,14 +174,13 @@ class DemoServerTest {
     }
 
     @Test
-    void resetClearsStateAndAccount() throws Exception {
+    void resetClearsState() throws Exception {
         body("POST", "/api/orders", "side=BUY&price=100&qty=5");
         body("POST", "/simulate/start", null);
         String res = body("POST", "/api/reset", "");
         assertTrue(res.contains("\"bids\":[]"), res);
         assertTrue(res.contains("\"nextOrderId\":1"), res);
         assertTrue(res.contains("\"running\":false"), res);
-        assertTrue(res.contains("\"reservedCash\":0.00"), res);
         assertTrue(res.contains("\"tradeCount\":0"), res);
     }
 }

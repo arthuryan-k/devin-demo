@@ -1,0 +1,9 @@
+[project]
+name = "risk"
+version = "0.1.0"
+description = "Synchronous pre-trade risk checks (reservations) against the portfolio ledger"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "../portfolio"]

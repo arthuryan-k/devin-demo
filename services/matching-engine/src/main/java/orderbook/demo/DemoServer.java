@@ -15,7 +15,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.io.Content;
@@ -79,7 +78,7 @@ public final class DemoServer {
 
     private DemoServer(InetSocketAddress address, Backends backends, ExchangeCore core) throws IOException {
         this(address, new Simulator(defaultSeed(), Simulator.DEFAULT_START_REFERENCE_TICKS,
-                new ExecutorScheduler("simulator"), core.engine(Symbols.DEFAULT).gateway()), null,
+                new ExecutorScheduler("simulator"), core.engine(Symbols.DEFAULT).gateway()),
                 AdmissionControl.Limits.DEFAULT, core, backends);
     }
 
@@ -118,28 +117,23 @@ public final class DemoServer {
         }
     }
 
-    /** {@code accountFactory} builds the user's account at startup and on reset; null for a random starting cash. */
-    public DemoServer(InetSocketAddress address, Simulator simulator, Supplier<Account> accountFactory)
-            throws IOException {
-        this(address, simulator, accountFactory, AdmissionControl.Limits.DEFAULT);
+    public DemoServer(InetSocketAddress address, Simulator simulator) throws IOException {
+        this(address, simulator, AdmissionControl.Limits.DEFAULT);
     }
 
     /** {@code limits} are the per-participant admission limits (rate, burst, open orders, violations). */
-    public DemoServer(InetSocketAddress address, Simulator simulator, Supplier<Account> accountFactory,
-            AdmissionControl.Limits limits) throws IOException {
-        this(address, simulator, accountFactory, limits, null);
+    public DemoServer(InetSocketAddress address, Simulator simulator, AdmissionControl.Limits limits) throws IOException {
+        this(address, simulator, limits, null);
     }
 
-    private DemoServer(InetSocketAddress address, Simulator simulator, Supplier<Account> accountFactory,
-            AdmissionControl.Limits limits, ExchangeCore core) throws IOException {
-        this(address, simulator, accountFactory, limits, core, Backends.local());
+    private DemoServer(InetSocketAddress address, Simulator simulator, AdmissionControl.Limits limits, ExchangeCore core) throws IOException {
+        this(address, simulator, limits, core, Backends.local());
     }
 
-    DemoServer(InetSocketAddress address, Simulator simulator, Supplier<Account> accountFactory,
-            AdmissionControl.Limits limits, ExchangeCore core, Backends backends) throws IOException {
+    DemoServer(InetSocketAddress address, Simulator simulator, AdmissionControl.Limits limits, ExchangeCore core, Backends backends) throws IOException {
         this.core = core;
         this.authService = backends.authService();
-        app = new DemoApp(simulator, accountFactory, limits, backends.directory(), backends.instruments());
+        app = new DemoApp(simulator, limits, backends.directory(), backends.instruments());
         server = new Server();
         connector = new ServerConnector(server);
         connector.setHost(address.getAddress() != null ? address.getAddress().getHostAddress() : address.getHostString());

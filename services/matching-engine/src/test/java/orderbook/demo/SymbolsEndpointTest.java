@@ -21,7 +21,7 @@ class SymbolsEndpointTest {
         List<Instrument> listing = List.of(
                 new Instrument("ACME", "Acme Corporation", "USD", new BigDecimal("0.01"), 1, new BigDecimal("2500.00")),
                 new Instrument("NVTA", "Novata \"Rx\"", "USD", new BigDecimal("0.005"), 100, BigDecimal.ZERO));
-        DemoApp app = new DemoApp(new Simulator(1), null, AdmissionControl.Limits.DEFAULT,
+        DemoApp app = new DemoApp(new Simulator(1), AdmissionControl.Limits.DEFAULT,
                 new ParticipantRegistry(new java.util.Random(1)), listing);
         try {
             DemoApp.Reply reply = app.handle("GET", "/api/symbols", null, "", null);
@@ -38,7 +38,7 @@ class SymbolsEndpointTest {
 
     @Test
     void withoutReferenceDataTheBuiltInListingIsServed() {
-        DemoApp app = new DemoApp(new Simulator(1), null);
+        DemoApp app = new DemoApp(new Simulator(1));
         try {
             String json = app.handle("GET", "/api/symbols", null, "", null).json();
             for (String symbol : Symbols.ALL) {
