@@ -36,6 +36,7 @@ WHERE symbol = 'ACME' AND participant_id = 1001 ORDER BY seq, event_index;
 | `DATABASE_URL` | required | |
 | `KAFKA_BROKERS` | `localhost:9092` | comma-separated |
 | `KAFKA_GROUP_ID` | `history-writer` | consumer group; offsets are committed after the rows |
+| `TOPIC_DISCOVERY_MS` | `10000` | how often to look for newly created `events.<symbol>` topics |
 
 ## Build and run
 

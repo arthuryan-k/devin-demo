@@ -12,9 +12,10 @@ const pool = new pg.Pool({ connectionString: databaseUrl, max: Number(process.en
 const consumer = new HistoryConsumer(new HistoryWriter(pool), {
   brokers,
   groupId: process.env.KAFKA_GROUP_ID ?? "history-writer",
+  discoveryIntervalMs: Number(process.env.TOPIC_DISCOVERY_MS ?? 10_000),
 });
 await consumer.start();
-console.log(`history-writer consuming events.<symbol> from ${brokers.join(",")}`);
+console.log(`history-writer discovering events.<symbol> topics on ${brokers.join(",")}`);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, async () => {

@@ -25,7 +25,8 @@ beforeAll(async () => {
   consumer = new HistoryConsumer(new HistoryWriter(pool), {
     brokers: [inject("kafkaBrokers")],
     groupId: "history-writer-test",
-    log: (m) => skipped.push(m),
+    discoveryIntervalMs: 500,
+    log: (m) => { if (m.startsWith("skipping")) skipped.push(m); },
   });
   await consumer.start();
 });
@@ -112,5 +113,21 @@ describe("events.<symbol> → history tables", () => {
     const trade = (await pool.query(`SELECT * FROM trades_history WHERE symbol = 'GLOBX'`)).rows[0];
     expect(trade).toMatchObject({ maker_participant_id: "1003", taker_participant_id: "1004", aggressor_side: "SELL" });
     expect(skipped.filter((m) => m.includes("events.GLOBX"))).toHaveLength(2);
+  });
+});
+
+describe("topic discovery", () => {
+  it("picks up an events.<symbol> topic created after the consumer started", async () => {
+    expect(consumer.subscribed).toEqual(["events.ACME", "events.GLOBX"]);
+    const admin = new Kafka({ clientId: "history-writer-test-admin", brokers: [inject("kafkaBrokers")] }).admin();
+    await admin.connect();
+    await admin.createTopics({ waitForLeaders: true, topics: [{ topic: "events.INITD", numPartitions: 1 }] });
+    await admin.disconnect();
+    await eventually(async () => consumer.subscribed.includes("events.INITD"), (v) => v);
+    await publish("INITD", {
+      symbol: "INITD", seq: 0, participantId: 1003,
+      events: [{ type: "OrderPlaced", orderId: 1, side: "BUY", orderType: "LIMIT", timeInForce: "GTC", price: 5000, qty: 1 }],
+    });
+    expect(await eventually(() => count("orders_history", "INITD"), (n) => n === 1)).toBe(1);
   });
 });

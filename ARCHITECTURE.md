@@ -290,7 +290,10 @@ to appear in `Symbols.ALL`.
 
 ### History
 
-`history-writer` subscribes to `^events\.[A-Z][A-Z0-9]{0,9}$` in consumer group `history-writer`. It maps each record
+`history-writer` consumes every topic matching `^events\.[A-Z][A-Z0-9]{0,9}$` in consumer group `history-writer`.
+KafkaJS resolves a regex subscription only once, at subscribe time, but the engine creates its topics when it starts.
+The worker therefore lists topics itself on startup and every `TOPIC_DISCOVERY_MS`. When a new listing appears, it
+re-subscribes the group, keeping the committed offsets. It maps each record
 (`schemas/bus/events.schema.json`) to rows. `OrderPlaced`, `OrderAmended`, `OrderCancelled` and `OrderRejected`
 become `orders_history` rows, and `TradeExecuted` becomes a `trades_history` row. A record's rows are written in one
 transaction with `ON CONFLICT DO NOTHING`, and the offset is committed only afterwards. Redelivery is therefore
