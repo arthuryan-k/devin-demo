@@ -503,11 +503,18 @@ flowchart LR
     M --> F["FakeExchange (in-browser)"]
 ```
 
-- **`HttpBackend`:** bearer-token session (`sessionStorage`), `POST /api/auth/login|signup`,
-  `GET /api/reference/symbols`, `POST /api/orders`, `PATCH`/`DELETE /api/orders/{id}`, `GET /api/portfolio`,
-  `GET /api/history/orders|trades`. Prices are decimals at this edge. Market data is one WebSocket per symbol; on
-  reconnect or a sequence gap it sends `{"op":"resync"}` and expects a fresh snapshot. Response parsing tolerates the
-  common field-name variants so the UI does not break on minor contract changes.
+- **`HttpBackend`:** follows the gateway contract (`services/gateway`, `services/market-data`). Bearer-token session
+  (`sessionStorage`) from `POST /api/auth/login|signup` (auth-service body `{token, user, account: {participantId}}`),
+  `GET /api/symbols`, `POST /api/orders` and `PATCH`/`DELETE /api/orders/{id}` with decimal-string prices. An order
+  reply is the engine's events for that one command (`{orderId, seq, events}`); the UI folds them into a status
+  (`OrderPlaced`/`TradeExecuted`/`OrderCancelled`, or `OrderRejected`/`RiskRejected` → rejected with the reason).
+  `GET /api/portfolio` is the portfolio service's account body in integer cents, including `openOrders` (live
+  reservations), polled every second and after each order call. `GET /api/history/orders|trades` return
+  `orders_history` / `trades_history` rows; order history folds the lifecycle rows per order and joins fills from the
+  caller's trades (maker or taker side). Gateway errors are `{error, reason}`. Market data is one WebSocket per
+  symbol at `/ws/marketdata/{symbol}` (integer ticks); on a sequence gap the client sends `{"type":"resync"}`, on a
+  dropped socket it reconnects with backoff, and either way it waits for a fresh snapshot. A book that has never
+  traded snapshots at seq `-1`.
 - **Market data:** `BookReplica` (`src/marketdata/bookReplica.ts`) is the TypeScript twin of the Java test replica:
   it applies the same snapshot/delta wire format (integer ticks) and returns `snapshot`, `delta`, `stale` or `gap`.
   `MarketStore` keeps one replica per symbol plus last/high/low/volume, the trade tape and the chart series, and

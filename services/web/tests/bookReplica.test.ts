@@ -37,4 +37,12 @@ describe("BookReplica", () => {
     r.apply({ ...ACME_SNAPSHOT, seq: 50, reason: "resync" });
     expect(r.seq).toBe(50);
   });
+
+  it("syncs from a pre-trading snapshot at seq -1 and takes seq 0 as the next delta", () => {
+    const r = new BookReplica();
+    r.apply({ type: "snapshot", symbol: "ACME", seq: -1, reason: "subscribe", bids: [], asks: [], trades: [], events: [] });
+    expect(r.synced).toBe(true);
+    expect(r.apply({ type: "delta", symbol: "ACME", seq: 0, levels: [["a", "B", 10000, 5, 1]], events: [] }).kind).toBe("delta");
+    expect(r.levels("B")).toEqual([{ price: 10000, qty: 5, orders: 1 }]);
+  });
 });

@@ -7,11 +7,16 @@ import { toPortfolio } from "../src/api/http";
 
 const view = (cash: number, acmeQty: number, mark: number): AccountView => ({
   openOrders: [],
+  // the portfolio service's /v1/accounts body, integer cents
   portfolio: toPortfolio({
-    cash, reservedCash: "500.00", startingCash: 100000, equity: cash + acmeQty * mark, sessionPnl: acmeQty * (mark - 100),
+    cash: cash * 100, reservedCash: 50000, availableCash: (cash - 500) * 100, startingCash: 10000000,
+    equity: (cash + acmeQty * mark + 410) * 100, realizedPnl: 350, unrealizedPnl: (acmeQty * (mark - 100) + 10) * 100,
+    sessionPnl: acmeQty * (mark - 100) * 100,
     positions: [
-      { symbol: "ACME", qty: acmeQty, reservedQty: 0, avgCost: "100.00", markPrice: mark, unrealizedPnl: acmeQty * (mark - 100), realizedPnl: 0 },
-      { symbol: "GLOBX", qty: 10, reservedQty: 4, avgCost: 40, markPrice: 41, unrealizedPnl: 10, realizedPnl: 3.5 },
+      { symbol: "ACME", shares: acmeQty, reservedShares: 0, availableShares: acmeQty, costBasis: acmeQty * 10000, avgCost: 10000,
+        markPrice: mark * 100, marketValue: acmeQty * mark * 100, realizedPnl: 0, unrealizedPnl: acmeQty * (mark - 100) * 100 },
+      { symbol: "GLOBX", shares: 10, reservedShares: 4, availableShares: 6, costBasis: 40000, avgCost: 4000,
+        markPrice: 4100, marketValue: 41000, realizedPnl: 350, unrealizedPnl: 1000 },
     ],
   }),
 });

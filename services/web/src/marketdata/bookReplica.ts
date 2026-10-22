@@ -16,13 +16,14 @@ export class BookReplica {
   private bids = new Map<number, WireLevel>();
   private asks = new Map<number, WireLevel>();
   private _seq = -1;
+  private _synced = false;
 
   get seq(): number {
     return this._seq;
   }
 
   get synced(): boolean {
-    return this._seq >= 0;
+    return this._synced;
   }
 
   apply(msg: MarketDataMessage): ApplyResult {
@@ -30,6 +31,7 @@ export class BookReplica {
       this.bids = new Map(msg.bids.map((l) => [l[0], l]));
       this.asks = new Map(msg.asks.map((l) => [l[0], l]));
       this._seq = msg.seq;
+      this._synced = true;
       return { kind: "snapshot", trades: msg.trades ?? [] };
     }
     if (!this.synced || msg.seq <= this._seq) {
@@ -37,7 +39,7 @@ export class BookReplica {
     }
     if (msg.seq !== this._seq + 1) {
       const expected = this._seq + 1;
-      this._seq = -1;
+      this._synced = false;
       return { kind: "gap", expected, got: msg.seq };
     }
     for (const [op, side, price, qty, orders] of msg.levels) {

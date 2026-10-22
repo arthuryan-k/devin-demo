@@ -36,8 +36,13 @@ const num = (v: unknown, fallback = 0): number => {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
 };
-const numOrNull = (v: unknown): number | null => (v == null || v === "" ? null : num(v, NaN));
 const time = (v: unknown): number => (typeof v === "string" && Number.isNaN(Number(v)) ? Date.parse(v) : num(v));
+/** Portfolio, history and bus amounts are integer cents (ticks of 0.01); the UI works in decimal dollars. */
+const CENTS = 100;
+const px = (v: unknown): number => num(v) / CENTS;
+const pxOrNull = (v: unknown): number | null => (v == null || v === "" ? null : px(v));
+/** Decimal string on the tick grid, as the gateway expects (`"100.25"`). */
+const decimal = (v: number): string => (Math.round(v * CENTS) / CENTS).toFixed(2);
 
 /** Backend for the real stack: gateway/BFF REST API plus the market-data service's per-symbol WebSocket feed. */
 export class HttpBackend implements Backend {
@@ -50,6 +55,8 @@ export class HttpBackend implements Backend {
   private readonly fetchImpl: typeof fetch;
   private readonly WS: typeof WebSocket;
   private readonly accountListeners = new Set<() => void>();
+  /** The portfolio service has no order timestamps; remember when each open order was first seen. */
+  private readonly firstSeen = new Map<number, number>();
 
   constructor(opts: HttpBackendOptions = {}) {
     this.apiBase = (opts.apiBase ?? "").replace(/\/$/, "");
@@ -101,7 +108,7 @@ export class HttpBackend implements Backend {
   // ---- reference + market data ---------------------------------------------------------------------------------
 
   async instruments(): Promise<Instrument[]> {
-    const body = await this.request<Json[] | Json>("GET", "/api/reference/symbols");
+    const body = await this.request<Json[] | Json>("GET", "/api/symbols");
     const rows = Array.isArray(body) ? body : ((body.symbols ?? body.instruments ?? []) as Json[]);
     return rows.map((r) => ({
       symbol: String(r.symbol),
@@ -127,7 +134,6 @@ export class HttpBackend implements Backend {
       ws = new this.WS(url);
       ws.onopen = () => {
         attempt = 0;
-        ws?.send(JSON.stringify({ op: "subscribe", symbol }));
       };
       ws.onmessage = (ev) => {
         const msg = JSON.parse(String(ev.data)) as MarketDataMessage;
@@ -151,7 +157,7 @@ export class HttpBackend implements Backend {
       },
       resync: () => {
         handlers.onStatus("resyncing");
-        if (ws?.readyState === this.WS.OPEN) ws.send(JSON.stringify({ op: "resync", symbol }));
+        if (ws?.readyState === this.WS.OPEN) ws.send(JSON.stringify({ type: "resync" }));
         else ws?.close();
       },
     };
@@ -165,11 +171,8 @@ export class HttpBackend implements Backend {
     const poll = async () => {
       clearTimeout(timer);
       try {
-        const [portfolio, open] = await Promise.all([
-          this.request<Json>("GET", "/api/portfolio"),
-          this.request<Json[] | Json>("GET", "/api/orders?status=open"),
-        ]);
-        if (!stopped) onUpdate({ portfolio: toPortfolio(portfolio), openOrders: toOpenOrders(open) });
+        const body = await this.request<Json>("GET", "/api/portfolio");
+        if (!stopped) onUpdate({ portfolio: toPortfolio(body), openOrders: toOpenOrders(body, this.firstSeen) });
       } catch (err) {
         if (!stopped) onError?.(err as Error);
       }
@@ -186,13 +189,16 @@ export class HttpBackend implements Backend {
   }
 
   async placeOrder(order: OrderRequest): Promise<OrderResult> {
-    const body: Json = { ...order };
-    if (order.type === "MARKET") delete body.price;
+    const body: Json = { symbol: order.symbol, side: order.side, type: order.type, qty: order.qty, timeInForce: order.timeInForce };
+    if (order.type === "LIMIT" && order.price != null) body.price = decimal(order.price);
     return this.orderCall("POST", "/api/orders", body);
   }
 
   amendOrder(orderId: number, change: { price?: number; qty?: number }): Promise<OrderResult> {
-    return this.orderCall("PATCH", `/api/orders/${orderId}`, change);
+    const body: Json = {};
+    if (change.price != null) body.price = decimal(change.price);
+    if (change.qty != null) body.qty = change.qty;
+    return this.orderCall("PATCH", `/api/orders/${orderId}`, body);
   }
 
   cancelOrder(orderId: number): Promise<OrderResult> {
@@ -207,37 +213,21 @@ export class HttpBackend implements Backend {
     }
   }
 
+  /**
+   * Order history folds the gateway's `orders_history` event rows (PLACED / AMENDED / CANCELLED / REJECTED) into one
+   * row per order, with fills joined from `trades_history`.
+   */
   async orderHistory(query: HistoryQuery = {}): Promise<OrderHistoryRow[]> {
-    const body = await this.request<Json[] | Json>("GET", `/api/history/orders${qs(query)}`);
-    return list(body, "orders").map((r) => ({
-      orderId: num(r.orderId ?? r.id),
-      symbol: String(r.symbol),
-      side: r.side as OrderHistoryRow["side"],
-      type: (r.type ?? r.orderType ?? "LIMIT") as OrderHistoryRow["type"],
-      timeInForce: (r.timeInForce ?? r.tif ?? "GTC") as OrderHistoryRow["timeInForce"],
-      price: numOrNull(r.price),
-      qty: num(r.qty ?? r.quantity),
-      filledQty: num(r.filledQty),
-      avgFillPrice: numOrNull(r.avgFillPrice),
-      status: String(r.status ?? "NEW") as OrderStatus,
-      reason: r.reason ? String(r.reason) : undefined,
-      createdAt: time(r.createdAt),
-      updatedAt: time(r.updatedAt ?? r.createdAt),
-    }));
+    const [orders, trades] = await Promise.all([
+      this.request<Json[] | Json>("GET", `/api/history/orders${qs(query)}`),
+      this.tradeHistory(query),
+    ]);
+    return foldOrderHistory(list(orders, "orders"), trades);
   }
 
   async tradeHistory(query: HistoryQuery = {}): Promise<TradeHistoryRow[]> {
     const body = await this.request<Json[] | Json>("GET", `/api/history/trades${qs(query)}`);
-    return list(body, "trades").map((r) => ({
-      tradeId: String(r.tradeId ?? r.id),
-      orderId: num(r.orderId),
-      symbol: String(r.symbol),
-      side: r.side as TradeHistoryRow["side"],
-      price: num(r.price),
-      qty: num(r.qty ?? r.quantity),
-      liquidity: (r.liquidity ?? "TAKER") as TradeHistoryRow["liquidity"],
-      time: time(r.time ?? r.executedAt ?? r.createdAt),
-    }));
+    return list(body, "trades").map((r) => toTradeRow(r, this.session?.participantId ?? 0));
   }
 
   // ---- transport -----------------------------------------------------------------------------------------------
@@ -254,9 +244,11 @@ export class HttpBackend implements Backend {
     const text = await res.text();
     const data = text ? (JSON.parse(text) as Json) : {};
     if (!res.ok) {
+      // gateway errors are {error: message, reason: CODE}; auth-service errors are {error: CODE, message}
       const reason = String(data.reason ?? data.error ?? res.statusText ?? "ERROR");
+      const message = data.message ?? (data.reason != null ? data.error : undefined) ?? reason;
       if (res.status === 401 && auth) this.logout();
-      throw new ApiError(res.status, reason, String(data.message ?? reason));
+      throw new ApiError(res.status, reason, String(message));
     }
     return data as T;
   }
@@ -274,54 +266,176 @@ function list(body: Json[] | Json, key: string): Json[] {
   return Array.isArray(body) ? body : ((body[key] ?? body.items ?? []) as Json[]);
 }
 
+const pick = (r: Json, ...keys: string[]): unknown => {
+  for (const k of keys) if (r[k] != null) return r[k];
+  return undefined;
+};
+
+/** The portfolio service's `/v1/accounts/{participantId}` body (integer cents), as proxied by `GET /api/portfolio`. */
 export function toPortfolio(p: Json): Portfolio {
-  const positions = ((p.positions ?? []) as Json[]).map(
-    (r): Position => ({
+  const positions = ((p.positions ?? []) as Json[]).map((r): Position => {
+    const qty = num(pick(r, "shares", "qty"));
+    const reservedQty = num(pick(r, "reservedShares", "reservedQty"));
+    const markPrice = pxOrNull(r.markPrice);
+    return {
       symbol: String(r.symbol),
-      qty: num(r.qty ?? r.shares),
-      reservedQty: num(r.reservedQty ?? r.reservedShares),
-      availableQty: num(r.availableQty ?? r.availableShares, num(r.qty ?? r.shares) - num(r.reservedQty ?? r.reservedShares)),
-      avgCost: numOrNull(r.avgCost),
-      markPrice: numOrNull(r.markPrice),
-      marketValue: num(r.marketValue, num(r.qty ?? r.shares) * num(r.markPrice)),
-      realizedPnl: num(r.realizedPnl),
-      unrealizedPnl: num(r.unrealizedPnl),
-    }),
-  );
+      qty,
+      reservedQty,
+      availableQty: num(pick(r, "availableShares", "availableQty"), qty - reservedQty),
+      avgCost: pxOrNull(r.avgCost),
+      markPrice,
+      marketValue: r.marketValue != null ? px(r.marketValue) : qty * (markPrice ?? 0),
+      realizedPnl: px(r.realizedPnl),
+      unrealizedPnl: px(r.unrealizedPnl),
+    };
+  });
+  const realizedPnl = p.realizedPnl != null ? px(p.realizedPnl) : positions.reduce((s, x) => s + x.realizedPnl, 0);
+  const unrealizedPnl = p.unrealizedPnl != null ? px(p.unrealizedPnl) : positions.reduce((s, x) => s + x.unrealizedPnl, 0);
   return {
-    cash: num(p.cash),
-    reservedCash: num(p.reservedCash),
-    availableCash: num(p.availableCash, num(p.cash) - num(p.reservedCash)),
-    startingCash: num(p.startingCash),
-    equity: num(p.equity),
-    realizedPnl: num(p.realizedPnl, positions.reduce((s, x) => s + x.realizedPnl, 0)),
-    unrealizedPnl: num(p.unrealizedPnl, positions.reduce((s, x) => s + x.unrealizedPnl, 0)),
-    sessionPnl: num(p.sessionPnl),
+    cash: px(p.cash),
+    reservedCash: px(p.reservedCash),
+    availableCash: p.availableCash != null ? px(p.availableCash) : px(p.cash) - px(p.reservedCash),
+    startingCash: px(p.startingCash),
+    equity: px(p.equity),
+    realizedPnl,
+    unrealizedPnl,
+    sessionPnl: p.sessionPnl != null ? px(p.sessionPnl) : realizedPnl + unrealizedPnl,
     positions,
   };
 }
 
-function toOpenOrders(body: Json[] | Json): OpenOrder[] {
-  return list(body, "orders").map((o) => ({
-    id: num(o.id ?? o.orderId),
-    symbol: String(o.symbol),
-    side: o.side as OpenOrder["side"],
-    type: (o.type ?? "LIMIT") as OpenOrder["type"],
-    timeInForce: (o.timeInForce ?? "GTC") as OpenOrder["timeInForce"],
-    price: numOrNull(o.price),
-    qty: num(o.qty ?? o.remainingQty),
-    filledQty: num(o.filledQty),
-    reservedCash: num(o.reservedCash),
-    createdAt: time(o.createdAt ?? Date.now()),
-  }));
+/** Open orders are the portfolio service's live reservations (`openOrders`, status PENDING/OPEN). */
+export function toOpenOrders(body: Json, firstSeen = new Map<number, number>()): OpenOrder[] {
+  const rows = (body.openOrders ?? []) as Json[];
+  const now = Date.now();
+  const live = new Set<number>();
+  const orders = rows.map((o): OpenOrder => {
+    const id = num(pick(o, "orderId", "id"));
+    live.add(id);
+    if (!firstSeen.has(id)) firstSeen.set(id, now);
+    return {
+      id,
+      symbol: String(o.symbol),
+      side: o.side as OpenOrder["side"],
+      type: (o.type ?? "LIMIT") as OpenOrder["type"],
+      timeInForce: (pick(o, "tif", "timeInForce") ?? "GTC") as OpenOrder["timeInForce"],
+      price: pxOrNull(pick(o, "limitPrice", "price")),
+      qty: num(pick(o, "openQty", "qty")),
+      filledQty: num(o.filledQty),
+      reservedCash: px(o.reservedCash),
+      createdAt: firstSeen.get(id)!,
+    };
+  });
+  for (const id of firstSeen.keys()) if (!live.has(id)) firstSeen.delete(id);
+  return orders;
 }
 
-function toOrderResult(r: Json): OrderResult {
+/** The gateway's order reply: the engine events for this one command (prices as decimal strings), or a RiskRejected. */
+export function toOrderResult(r: Json): OrderResult {
+  const orderId = num(r.orderId);
+  const events = (r.events ?? []) as Json[];
+  let status: OrderStatus = "NEW";
+  let qty: number | null = null;
+  let filledQty = 0;
+  let reason: string | undefined;
+  for (const e of events) {
+    switch (e.type) {
+      case "OrderPlaced":
+        qty = num(e.qty);
+        break;
+      case "OrderAmended":
+        qty = num(e.newQty) + filledQty;
+        break;
+      case "TradeExecuted":
+        if (num(e.takerOrderId) === orderId || num(e.makerOrderId) === orderId) filledQty += num(e.qty);
+        break;
+      case "OrderCancelled":
+        status = "CANCELLED";
+        if (e.reason && e.reason !== "USER_REQUESTED") reason = String(e.reason);
+        break;
+      default: // OrderRejected (engine), RiskRejected (risk service), Rejected (not your order)
+        if (String(e.type).endsWith("Rejected")) {
+          status = "REJECTED";
+          reason = String(e.message ?? e.reason ?? e.type);
+        }
+    }
+  }
+  if (status === "NEW" && filledQty > 0) status = qty != null && filledQty >= qty ? "FILLED" : "PARTIALLY_FILLED";
+  return { orderId, status, filledQty, reason, seq: r.seq == null ? undefined : num(r.seq) };
+}
+
+/** One `trades_history` row from the caller's point of view (maker or taker). */
+export function toTradeRow(r: Json, participantId: number): TradeHistoryRow {
+  const aggressor = String(pick(r, "aggressor_side", "aggressorSide", "side") ?? "BUY") as TradeHistoryRow["side"];
+  const iAmTaker = num(pick(r, "taker_participant_id", "takerParticipantId")) === participantId;
+  const symbol = String(r.symbol);
   return {
-    orderId: num(r.orderId ?? r.id),
-    status: String(r.status ?? "NEW") as OrderStatus,
-    filledQty: num(r.filledQty),
-    reason: r.reason ? String(r.reason) : undefined,
-    seq: r.seq == null ? undefined : num(r.seq),
+    tradeId: String(pick(r, "id", "tradeId") ?? `${symbol}-${num(r.seq)}-${num(r.event_index)}`),
+    orderId: num(iAmTaker ? pick(r, "taker_order_id", "takerOrderId") : pick(r, "maker_order_id", "makerOrderId")),
+    symbol,
+    side: iAmTaker ? aggressor : aggressor === "BUY" ? "SELL" : "BUY",
+    price: px(pick(r, "price_ticks", "priceTicks", "price")),
+    qty: num(r.qty),
+    liquidity: iAmTaker ? "TAKER" : "MAKER",
+    time: time(pick(r, "event_time", "eventTime", "time")),
   };
+}
+
+/** Folds `orders_history` lifecycle rows into one row per order; fills come from the caller's trade history. */
+export function foldOrderHistory(rows: Json[], trades: TradeHistoryRow[]): OrderHistoryRow[] {
+  const fills = new Map<string, { qty: number; notional: number }>();
+  for (const t of trades) {
+    const k = `${t.symbol}:${t.orderId}`;
+    const f = fills.get(k) ?? { qty: 0, notional: 0 };
+    f.qty += t.qty;
+    f.notional += t.qty * t.price;
+    fills.set(k, f);
+  }
+  const ordered = [...rows].sort((a, b) => num(a.seq) - num(b.seq) || num(a.event_index) - num(b.event_index));
+  const byOrder = new Map<string, OrderHistoryRow>();
+  for (const r of ordered) {
+    const orderId = num(pick(r, "order_id", "orderId"));
+    const symbol = String(r.symbol);
+    const k = `${symbol}:${orderId}`;
+    const at = time(pick(r, "event_time", "eventTime"));
+    const price = pxOrNull(pick(r, "price_ticks", "priceTicks"));
+    let o = byOrder.get(k);
+    if (!o) {
+      o = {
+        orderId, symbol,
+        side: (r.side ?? "BUY") as OrderHistoryRow["side"],
+        type: (pick(r, "order_type", "orderType") ?? "LIMIT") as OrderHistoryRow["type"],
+        timeInForce: (pick(r, "time_in_force", "timeInForce") ?? "GTC") as OrderHistoryRow["timeInForce"],
+        price: null, qty: 0, filledQty: 0, avgFillPrice: null, status: "NEW", createdAt: at, updatedAt: at,
+      };
+      byOrder.set(k, o);
+    }
+    o.updatedAt = at;
+    switch (pick(r, "event_type", "eventType")) {
+      case "PLACED":
+        o.price = price && price > 0 ? price : null;
+        o.qty = num(r.qty);
+        break;
+      case "AMENDED":
+        if (price && price > 0) o.price = price;
+        break;
+      case "CANCELLED":
+        o.status = "CANCELLED";
+        break;
+      case "REJECTED":
+        o.status = "REJECTED";
+        o.reason = r.reason ? String(r.reason) : undefined;
+        if (!o.qty) o.qty = num(r.qty);
+        break;
+    }
+  }
+  for (const [k, o] of byOrder) {
+    const f = fills.get(k);
+    if (f) {
+      o.filledQty = f.qty;
+      o.avgFillPrice = f.notional / f.qty;
+    }
+    if (o.status === "NEW" && o.filledQty > 0) o.status = o.filledQty >= o.qty ? "FILLED" : "PARTIALLY_FILLED";
+  }
+  return [...byOrder.values()].sort((a, b) => b.updatedAt - a.updatedAt);
 }
