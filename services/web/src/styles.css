@@ -49,8 +49,18 @@ button, input, select { font: inherit; color: inherit; }
 .brand-product { color: var(--dim); margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--line); }
 .brand-lg { font-size: 22px; justify-content: center; }
 .topnav { display: flex; gap: 2px; }
-.topnav span { padding: 6px 10px; color: var(--dim); border-radius: 2px; cursor: default; }
-.topnav span.active { color: #fff; background: var(--panel-head); }
+.topnav button {
+  padding: 6px 10px; color: var(--dim); background: none; border: 0; border-radius: 2px; font: inherit; cursor: pointer;
+}
+.topnav button:hover:not(:disabled) { color: #fff; }
+.topnav button.active { color: #fff; background: var(--panel-head); }
+.topnav button:disabled { cursor: default; opacity: 0.5; }
+.layout-portfolio {
+  flex: 1; min-height: 0; display: grid; gap: 3px; padding: 3px;
+  grid-template-columns: minmax(420px, 1fr) minmax(520px, 1.4fr);
+}
+.layout-portfolio .panel { min-height: 0; }
+@media (max-width: 1100px) { .layout-portfolio { grid-template-columns: 1fr; overflow: auto; } }
 .topbar-metrics { display: flex; gap: 22px; margin-left: auto; }
 .metric { display: flex; flex-direction: column; line-height: 1.1; }
 .metric-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }

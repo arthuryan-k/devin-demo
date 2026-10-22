@@ -37,4 +37,11 @@ test("static Pages build loads standalone with fixture data and trades", async (
   await page.screenshot({ path: "test-results/pages-mock.png", fullPage: true });
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
+
+  await page.getByRole("tab", { name: "Portfolio" }).click();
+  await expect(page.getByTestId("portfolio-page")).toBeVisible();
+  await expect(page.getByTestId("portfolio-page").getByTestId("pos-ACME")).toBeVisible();
+  await page.screenshot({ path: "test-results/portfolio-tab.png" });
+  await page.getByTestId("pos-ACME").click();
+  await expect(page.getByTestId("portfolio-page")).toHaveCount(0);
 });
