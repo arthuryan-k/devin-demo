@@ -255,12 +255,21 @@ public final class Journal implements CommandLog, Closeable {
 
     /** The newest snapshot plus every entry after it. Read-only; an absent directory recovers as empty. */
     public synchronized Recovery load() {
+        return load(Long.MAX_VALUE);
+    }
+
+    /**
+     * Recovery as of {@code throughSeq}: the newest snapshot with {@code seq <= throughSeq} plus the entries after
+     * it up to and including {@code throughSeq}. Older snapshots and covered segments are kept until
+     * {@link #pruneCoveredSegments()}, so any earlier point can be reconstructed. Read-only.
+     */
+    public synchronized Recovery load(long throughSeq) {
         if (!Files.exists(dir)) {
             return new Recovery(null, List.of());
         }
         try {
             checkDirectory();
-            Snapshot snapshot = newestSnapshot();
+            Snapshot snapshot = newestSnapshot(throughSeq);
             long covered = snapshot != null ? snapshot.seq() : -1;
             List<SegmentFile> segments = segments();
             if (!segments.isEmpty() && segments.get(segments.size() - 1).tornHeader()) {
@@ -276,7 +285,7 @@ public final class Journal implements CommandLog, Closeable {
                                 + " out of order");
                     }
                     prev = e.seq();
-                    if (e.seq() > covered) {
+                    if (e.seq() > covered && e.seq() <= throughSeq) {
                         tail.add(e);
                     }
                 }
@@ -625,8 +634,9 @@ public final class Journal implements CommandLog, Closeable {
         return seqs;
     }
 
-    private Snapshot newestSnapshot() throws IOException {
+    private Snapshot newestSnapshot(long maxSeq) throws IOException {
         List<Long> seqs = snapshotSeqs();
+        seqs.removeIf(seq -> seq > maxSeq);
         if (seqs.isEmpty()) {
             return null;
         }

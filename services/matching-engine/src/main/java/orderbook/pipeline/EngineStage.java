@@ -27,6 +27,11 @@ final class EngineStage {
         this.engine = new MatchingEngine(symbol);
     }
 
+    EngineStage(MatchingEngine initial) {
+        this.symbol = initial.symbol();
+        this.engine = initial;
+    }
+
     String symbol() {
         return symbol;
     }

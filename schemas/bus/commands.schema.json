@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/arthuryan-k/devin-demo/schemas/bus/commands.schema.json",
+  "title": "commands.<symbol> record value",
+  "description": "One Place/Cancel/Amend per record. Record key = symbol; the topic has exactly one partition. Prices are integer ticks (100 ticks = 1.00). Unknown fields are rejected; invalid records go to commands.<symbol>.dlq with an 'error' header and consume no seq.",
+  "type": "object",
+  "required": ["type", "participantId"],
+  "properties": {
+    "v": {"const": 1, "description": "Schema version; optional."},
+    "type": {"enum": ["Place", "Cancel", "Amend"]},
+    "participantId": {"type": "integer", "minimum": 0, "description": "0 = anonymous (never self-trade-prevented)."},
+    "correlationId": {"type": ["string", "null"], "description": "Opaque; echoed unchanged on the events.<symbol> record for this command."},
+    "symbol": {"type": "string", "description": "Optional; must equal the topic's symbol."}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": {"const": "Place"},
+        "orderId": {"type": ["integer", "null"], "minimum": 1, "description": "Kept if supplied (must never have been used: else OrderRejected DUPLICATE_ORDER_ID); assigned by the engine if absent."},
+        "side": {"enum": ["BUY", "SELL"]},
+        "orderType": {"enum": ["LIMIT", "MARKET"], "default": "LIMIT"},
+        "timeInForce": {"enum": ["GTC", "IOC", "FOK"], "description": "Default GTC for LIMIT, IOC for MARKET."},
+        "price": {"type": ["integer", "null"], "description": "Limit price in ticks; required for LIMIT, ignored for MARKET."},
+        "qty": {"type": "integer", "minimum": 1}
+      },
+      "required": ["side", "qty"],
+      "propertyNames": {"enum": ["v", "type", "participantId", "correlationId", "symbol", "orderId", "side", "orderType", "timeInForce", "price", "qty"]}
+    },
+    {
+      "properties": {
+        "type": {"const": "Cancel"},
+        "orderId": {"type": "integer"}
+      },
+      "required": ["orderId"],
+      "propertyNames": {"enum": ["v", "type", "participantId", "correlationId", "symbol", "orderId"]}
+    },
+    {
+      "properties": {
+        "type": {"const": "Amend"},
+        "orderId": {"type": "integer"},
+        "newPrice": {"type": ["integer", "null"], "description": "New limit price in ticks; null keeps the price."},
+        "newQty": {"type": ["integer", "null"], "description": "New remaining quantity; null keeps it."}
+      },
+      "required": ["orderId"],
+      "propertyNames": {"enum": ["v", "type", "participantId", "correlationId", "symbol", "orderId", "newPrice", "newQty"]}
+    }
+  ],
+  "examples": [
+    {"type": "Place", "participantId": 7, "correlationId": "c-1", "orderId": 42, "side": "BUY", "orderType": "LIMIT", "timeInForce": "GTC", "price": 10000, "qty": 5},
+    {"type": "Cancel", "participantId": 7, "orderId": 42},
+    {"type": "Amend", "participantId": 7, "orderId": 42, "newPrice": 10100, "newQty": null}
+  ]
+}

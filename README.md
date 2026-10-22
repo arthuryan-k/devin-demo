@@ -13,6 +13,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol 
 |---|---|
 | `services/` | One directory per deployable service; each builds on its own toolchain. |
 | `services/matching-engine/` | Java 17 / Maven: the exchange core (one matching engine, Disruptor pipeline and journal per symbol), participant HTTP API, market-data stream, market simulator and the TeaVM browser build. |
+| `schemas/bus/` | JSON Schemas of the event-bus topics (`commands.<symbol>`, `events.<symbol>`, `marketdata.<symbol>`). |
+| `docker-compose.yml` | Redpanda (Kafka API) event bus plus the matching engine as a standalone service. |
 | `ARCHITECTURE.md` | Internals of the services. |
 | `.github/workflows/` | CI: tests the matching engine and deploys the live demo to GitHub Pages. |
 
@@ -97,4 +99,19 @@ From `services/matching-engine/`:
 mvn test                              # engine, simulator, account, server and property tests
 mvn compile exec:java                 # local server at http://localhost:8080/ (SIM_SEED=42 for a fixed seed)
 scripts/build-pages.sh                # static browser build into target/pages
+mvn verify                            # plus the Redpanda integration tests (needs Docker)
 ```
+
+### On the event bus
+
+From the repo root, `docker compose up --build` starts a Redpanda broker and the matching engine as a standalone
+service: send Place / Cancel / Amend JSON to `commands.<SYMBOL>` and read the sequenced results from
+`events.<SYMBOL>` and L2 market data from `marketdata.<SYMBOL>` (Kafka at `localhost:19092`):
+
+```
+docker compose exec redpanda rpk topic produce commands.ACME -k ACME
+{"type":"Place","participantId":7,"correlationId":"c-1","side":"BUY","price":10000,"qty":5}
+docker compose exec redpanda rpk topic consume events.ACME
+```
+
+Topic formats: [`schemas/bus/`](schemas/bus/); topology and recovery: [ARCHITECTURE.md](ARCHITECTURE.md#event-bus).
