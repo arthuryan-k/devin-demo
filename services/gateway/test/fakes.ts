@@ -1,7 +1,7 @@
 import { AdmissionControl, DEFAULT_LIMITS, type Limits } from "../src/admission.js";
 import { buildApp } from "../src/app.js";
 import type { Authenticator, Principal } from "../src/auth.js";
-import { InMemoryBus } from "../src/bus.js";
+import { InMemoryBus, type Bus } from "../src/bus.js";
 import { eventsTopic, type CommandMessage, type EngineEvent, type EventRecord } from "../src/contracts.js";
 import { Correlator } from "../src/correlator.js";
 import { OrderIdAllocator } from "../src/ids.js";
@@ -50,7 +50,7 @@ export class FakeEngine {
   held: CommandMessage[] = [];
   private book = new Map<number, { side: "BUY" | "SELL"; price: number; qty: number; owner: number; symbol: string }>();
 
-  constructor(private readonly bus: InMemoryBus, symbols: string[]) {
+  constructor(private readonly bus: Bus, symbols: string[]) {
     void bus.subscribe(
       symbols.map((s) => `commands.${s}`),
       async (record) => {
