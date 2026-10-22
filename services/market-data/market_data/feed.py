@@ -2,7 +2,7 @@
 
 Upstream (`marketdata.<symbol>`) carries the engine's feed: `snapshot` and `delta` messages with a per-symbol `seq`,
 integer-tick prices and the same shapes as the Java SSE feed. A feed applies deltas only when `seq` is exactly
-`last + 1`; a delta with seq 1 on an empty replica starts from an empty book. Anything else is an upstream gap: the
+`last + 1`; a delta with seq 0 (the engine's first command) on an empty replica starts from an empty book. Anything else is an upstream gap: the
 feed asks its source to replay from the last snapshot (or the start of the log), applies the replay silently and,
 once it has caught up past the gap, sends every subscriber a fresh snapshot (`reason: "resync"`).
 
@@ -30,6 +30,9 @@ class Subscriber:
         self.fmt = fmt
         self.queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=max_backlog)
         self.snapshots_sent = 0
+
+
+FIRST_SEQ = 0  # events.<symbol>/marketdata.<symbol> seqs are contiguous from 0; a pre-trading snapshot has seq -1
 
 
 class SymbolFeed:
@@ -73,7 +76,7 @@ class SymbolFeed:
                 self.snapshot_offset = offset
             self._after_advance(reason=str(msg.get("reason", "snapshot")))
         elif kind == "delta":
-            expected = 1 if self.seq is None else self.seq + 1
+            expected = FIRST_SEQ if self.seq is None else self.seq + 1
             if seq < expected:
                 return
             if seq > expected:

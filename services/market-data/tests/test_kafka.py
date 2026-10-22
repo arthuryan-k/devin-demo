@@ -35,6 +35,7 @@ async def test_consumes_replays_and_resyncs_from_kafka():
     hub = FeedHub([(symbol, "0.01")])
     source = KafkaSource(hub, BROKERS)
     try:
+        await send({"type": "snapshot", "seq": 0, "bids": [], "asks": [], "trades": [], "events": []})
         await send({"type": "delta", "seq": 1, "levels": [["a", "B", 10000, 1, 1]], "events": []})
         await send({"type": "delta", "seq": 2, "levels": [["a", "S", 10100, 2, 1]], "events": []})
         await source.start()

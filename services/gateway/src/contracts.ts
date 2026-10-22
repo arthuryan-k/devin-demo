@@ -42,8 +42,19 @@ export interface AmendCommand {
 
 export type CommandMessage = PlaceCommand | CancelCommand | AmendCommand;
 
-export type EngineEvent =
-  | { type: "OrderPlaced"; orderId: number; side: Side; price: number; qty: number; seqNum?: number }
+/** One engine event (schemas/bus/events.schema.json); every event also carries the envelope's {@code seq}. */
+export type EngineEvent = { seq?: number } & (
+  | {
+      type: "OrderPlaced";
+      orderId: number;
+      side: Side;
+      orderType?: OrderType;
+      timeInForce?: TimeInForce;
+      /** 0 for MARKET. */
+      price: number;
+      qty: number;
+      seqNum?: number;
+    }
   | { type: "OrderRejected"; orderId: number; reason: string }
   | { type: "OrderCancelled"; orderId: number; cancelledQty: number; reason: string }
   | {
@@ -53,6 +64,7 @@ export type EngineEvent =
       newPrice: number;
       oldQty: number;
       newQty: number;
+      seqNum?: number;
       priorityRetained: boolean;
     }
   | {
@@ -61,11 +73,18 @@ export type EngineEvent =
       qty: number;
       makerOrderId: number;
       takerOrderId: number;
+      makerParticipantId?: number;
+      takerParticipantId?: number;
       takerSide?: Side;
-    };
+    }
+);
 
+/** One events.<symbol> record: exactly one per sequenced command, {@code seq} contiguous from 0. */
 export interface EventRecord {
+  v?: number;
   seq: number;
+  ts?: number;
+  commandOffset?: number;
   symbol: string;
   correlationId?: string | null;
   participantId: number;

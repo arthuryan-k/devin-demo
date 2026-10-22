@@ -89,7 +89,7 @@ export class OrderService {
     const { instrument, ticks } = this.instrument(input.symbol);
     const side = choice("side", input.side, SIDES, undefined);
     const orderType = choice("type", input.type, TYPES, "LIMIT");
-    const timeInForce = choice("timeInForce", input.timeInForce, TIFS, "GTC");
+    const timeInForce = choice("timeInForce", input.timeInForce, TIFS, orderType === "MARKET" ? "IOC" : "GTC");
     const qty = guard(() => parseQty("qty", input.qty, instrument.lotSize));
     const price = orderType === "LIMIT" ? guard(() => ticks.toTicks("price", input.price)) : null;
     const orderId = input.id === undefined || String(input.id).trim() === "" ? this.deps.ids.next() : orderIdOf(input.id);

@@ -24,6 +24,7 @@ def test_snapshot_on_connect_then_ordered_deltas_in_decimals(exchange):
 
 
 def test_late_subscriber_snapshot_reflects_applied_deltas(exchange):
+    exchange.publish("ACME", snapshot(0))  # the engine opens each run with a snapshot
     exchange.publish("ACME", delta(1, [("a", "B", 9900, 2, 1)]))
     exchange.publish("ACME", delta(2, [("a", "S", 10000, 4, 1)]))
     exchange.publish("ACME", delta(3, [("u", "B", 9900, 7, 3)]))
@@ -35,6 +36,7 @@ def test_late_subscriber_snapshot_reflects_applied_deltas(exchange):
 
 
 def test_upstream_gap_triggers_replay_and_resync_snapshot(exchange):
+    exchange.publish("ACME", snapshot(0))  # the engine opens each run with a snapshot
     exchange.publish("ACME", delta(1, [("a", "B", 10000, 1, 1)]))
     with exchange.client.websocket_connect("/marketdata/ACME/ws") as ws:
         assert ws.receive_json()["seq"] == 1
@@ -54,6 +56,7 @@ def test_upstream_gap_triggers_replay_and_resync_snapshot(exchange):
 
 
 def test_gap_replays_from_latest_upstream_snapshot(exchange):
+    exchange.publish("ACME", snapshot(0))  # the engine opens each run with a snapshot
     exchange.publish("ACME", delta(1, [("a", "B", 1, 1, 1)]))
     exchange.publish("ACME", snapshot(50, bids=[(10000, 9, 3)]))
     exchange.publish("ACME", delta(51, [("a", "S", 10100, 1, 1)]), deliver=False)
@@ -65,6 +68,7 @@ def test_gap_replays_from_latest_upstream_snapshot(exchange):
 
 
 def test_client_requested_resync(exchange):
+    exchange.publish("ACME", snapshot(0))  # the engine opens each run with a snapshot
     exchange.publish("ACME", delta(1, [("a", "B", 10000, 1, 1)]))
     with exchange.client.websocket_connect("/marketdata/ACME/ws") as ws:
         ws.receive_json()
@@ -76,7 +80,7 @@ def test_client_requested_resync(exchange):
 def test_slow_consumer_backlog_collapses_to_snapshot(exchange):
     feed = exchange.client.app.state.hub.feed("ACME")
     sub = exchange.client.portal.call(feed.subscribe)
-    for seq in range(1, 20):  # max_backlog is 8 in tests
+    for seq in range(0, 20):  # max_backlog is 8 in tests
         exchange.publish("ACME", delta(seq, [("a", "B", 10000 + seq, 1, 1)]))
     drained = []
     while not sub.queue.empty():
@@ -87,6 +91,7 @@ def test_slow_consumer_backlog_collapses_to_snapshot(exchange):
 
 
 def test_symbols_are_isolated(exchange):
+    exchange.publish("ACME", snapshot(0))  # the engine opens each run with a snapshot
     exchange.publish("ACME", delta(1, [("a", "B", 10000, 1, 1)]))
     exchange.publish("GLOBX", snapshot(500, asks=[(400, 10, 1)]))
     with exchange.client.websocket_connect("/marketdata/ACME/ws") as acme, \
@@ -134,3 +139,11 @@ def test_web_ui_path_defaults_to_ticks(exchange):
     with exchange.client.websocket_connect("/ws/marketdata/acme") as ws:
         snap = ws.receive_json()
         assert (snap["symbol"], snap["bids"]) == ("ACME", [[10050, 1, 1]])
+
+
+def test_first_engine_delta_seq_0_starts_from_an_empty_book(exchange):
+    exchange.publish("ACME", delta(0, [("a", "B", 10000, 1, 1)]))
+    exchange.publish("ACME", delta(1, [("a", "S", 10100, 2, 1)]))
+    with exchange.client.websocket_connect("/marketdata/ACME/ws?prices=ticks") as ws:
+        snap = ws.receive_json()
+        assert (snap["seq"], snap["bids"], snap["asks"]) == (1, [[10000, 1, 1]], [[10100, 2, 1]])
