@@ -26,6 +26,14 @@ async def test_consumes_replays_and_resyncs_from_kafka():
     from aiokafka import AIOKafkaProducer
 
     symbol = f"MD{int(time.time() * 1000):X}"
+    from aiokafka.admin import AIOKafkaAdminClient, NewTopic
+
+    admin = AIOKafkaAdminClient(bootstrap_servers=BROKERS)  # compose disables topic auto-creation
+    await admin.start()
+    try:
+        await admin.create_topics([NewTopic(topic_for(symbol), num_partitions=1, replication_factor=1)])
+    finally:
+        await admin.close()
     producer = AIOKafkaProducer(bootstrap_servers=BROKERS, enable_idempotence=True)
     await producer.start()
 

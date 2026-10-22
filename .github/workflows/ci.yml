@@ -72,3 +72,45 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker compose config --quiet
       - run: docker compose build
+
+  gateway:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: services/gateway/package-lock.json
+      - run: docker compose up -d --wait redpanda
+        working-directory: .
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Unit and Redpanda integration tests
+        run: npm test
+        env:
+          KAFKA_BROKERS: localhost:19092
+
+  market-data:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/market-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/market-data/requirements*.txt
+      - run: docker compose up -d --wait redpanda
+        working-directory: .
+      - run: pip install -r requirements-dev.txt
+      - name: Unit and Redpanda integration tests
+        run: python -m pytest -q
+        env:
+          KAFKA_BROKERS: localhost:19092
