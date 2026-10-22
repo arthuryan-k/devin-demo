@@ -67,7 +67,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .layout {
   flex: 1; min-height: 0; display: grid; gap: 3px; padding: 3px;
-  grid-template-columns: minmax(330px, 25fr) minmax(420px, 44fr) minmax(270px, 17fr) minmax(270px, 17fr);
+  grid-template-columns: minmax(360px, 26fr) minmax(420px, 42fr) minmax(260px, 16fr) minmax(270px, 17fr);
 }
 .col-left, .col-center, .col-book, .col-right { display: flex; flex-direction: column; gap: 3px; min-height: 0; min-width: 0; }
 .col-left .watchlist { flex: 0 0 auto; }
@@ -94,9 +94,9 @@ button, input, select { font: inherit; color: inherit; }
 table.grid { width: 100%; border-collapse: collapse; }
 .grid th {
   position: sticky; top: 0; z-index: 1; background: var(--panel); color: var(--dim); font-weight: 500; font-size: 10.5px;
-  text-transform: uppercase; letter-spacing: 0.03em; text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line);
+  text-transform: uppercase; letter-spacing: 0.03em; text-align: right; padding: 4px 5px; white-space: nowrap; border-bottom: 1px solid var(--line);
 }
-.grid td { padding: 3px 6px; text-align: right; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+.grid td { padding: 3px 5px; text-align: right; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
 .grid .l { text-align: left; }
 .grid .c { text-align: center; }
 .grid.compact td { padding: 2px 6px; }
@@ -155,7 +155,9 @@ table.grid { width: 100%; border-collapse: collapse; }
 .side-toggle button { padding: 6px; font-weight: 700; border: 1px solid var(--line); background: #121822; color: var(--dim); cursor: pointer; border-radius: 2px; }
 .side-toggle .buy.on { background: #0f4f8f; color: #fff; border-color: #1f6fbf; }
 .side-toggle .sell.on { background: #8f1a24; color: #fff; border-color: #bf2a36; }
-.ticket-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ticket-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+.ticket-grid label { min-width: 0; }
+.ticket-grid input, .ticket-grid select { width: 100%; min-width: 0; }
 .ticket label, .login-card label { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--dim); text-transform: uppercase; }
 .ticket input, .ticket select, .login-card input {
   background: #070a0f; border: 1px solid var(--line); padding: 5px 6px; border-radius: 2px; text-transform: none; font-size: 12.5px;

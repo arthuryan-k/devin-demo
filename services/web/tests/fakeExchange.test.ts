@@ -40,6 +40,10 @@ describe("mock exchange (Pages build)", () => {
       } catch {
         /* rejected by risk */
       }
+      for (const sym of ["ACME", "GLOBX"]) {
+        const mk = ex.market(sym);
+        expect(mk.bestBid()!, `${sym} book locked/crossed at step ${i}`).toBeLessThan(mk.bestAsk()!);
+      }
       expect(a.cash).toBeGreaterThanOrEqual(0);
       expect(a.reservedCash).toBeGreaterThanOrEqual(0);
       expect(a.reservedCash).toBeLessThanOrEqual(a.cash);

@@ -184,6 +184,15 @@ class SymbolMarket {
     const half = this.params.spread;
     const topBid = Math.floor(this.ref) - Math.floor(this.rand() * half);
     const topAsk = Math.max(topBid + 1, Math.ceil(this.ref) + Math.floor(this.rand() * half));
+    // Quotes left behind by a fast move would lock or cross the new touch: pull them.
+    this.asks.forEach((_, p) => p <= topBid && this.asks.delete(p));
+    this.bids.forEach((_, p) => p >= topAsk && this.bids.delete(p));
+    const userBids = this.userOrders.filter((o) => o.side === "BUY").map((o) => o.price!);
+    const userAsks = this.userOrders.filter((o) => o.side === "SELL").map((o) => o.price!);
+    const bidCeiling = Math.min(topAsk, ...userAsks); // synthetic bids stay strictly below this
+    const askFloor = Math.max(topBid, ...userBids); // synthetic asks stay strictly above this
+    this.bids.forEach((_, p) => p >= bidCeiling && this.bids.delete(p));
+    this.asks.forEach((_, p) => p <= askFloor && this.asks.delete(p));
     for (const [book, top, dir] of [
       [this.bids, topBid, -1],
       [this.asks, topAsk, 1],
@@ -191,6 +200,7 @@ class SymbolMarket {
       for (let i = 0; i < 16; i++) {
         const p = top + dir * i;
         if (p <= 0) break;
+        if (dir < 0 ? p >= bidCeiling : p <= askFloor) continue;
         const l = book.get(p);
         if (!l || l.qty <= 0) {
           if (i > 1 && this.rand() < 0.18) continue; // leave gaps deeper in the book
