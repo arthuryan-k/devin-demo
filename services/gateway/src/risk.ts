@@ -50,10 +50,10 @@ export class HttpRiskClient implements RiskClient {
     const key = { participantId: rest.participantId, accountId: rest.accountId, symbol: rest.symbol, orderId: rest.orderId };
     const res =
       action === "AMEND"
-        ? await this.post("/v1/check-amend", { ...key, newPrice: price, newQty: qty })
+        ? await this.post("/v1/orders/check-amend", { ...key, newPrice: price, newQty: qty })
         : action === "CANCEL"
-          ? await this.post("/v1/check-cancel", key)
-          : await this.post("/v1/check", { ...rest, price, qty });
+          ? await this.post("/v1/orders/check-cancel", key)
+          : await this.post("/v1/orders/check", { ...rest, price, qty });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (res.ok && body.approved !== false) {
       const limitPrice = Number(body.limitPrice ?? body.protectionPrice);
@@ -70,7 +70,7 @@ export class HttpRiskClient implements RiskClient {
   }
 
   async release(request: ReleaseRequest): Promise<void> {
-    const res = await this.post("/v1/release", { kind: "place", ...request });
+    const res = await this.post("/v1/orders/release", { kind: "place", ...request });
     if (!res.ok && res.status !== 404) {
       throw new RiskUnavailable(`risk service returned ${res.status}`);
     }

@@ -100,14 +100,14 @@ describe("HttpRiskClient", () => {
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
   const base = { participantId: 1001, accountId: 7, symbol: "ACME", orderId: 5 };
 
-  it("maps place / amend / cancel / release onto the /v1 routes", async () => {
+  it("maps place / amend / cancel / release onto the /v1/orders routes", async () => {
     const { calls, client } = recorder(() => json({ approved: true, orderId: 5, limitPrice: 1050 }));
     expect(await client.check({ ...base, action: "PLACE", side: "BUY", orderType: "MARKET", timeInForce: "IOC", price: null, qty: 2 })).toEqual({ approved: true, limitPrice: 1050 });
     await client.check({ ...base, action: "AMEND", price: 1200, qty: null });
     await client.check({ ...base, action: "CANCEL", price: null, qty: null });
     await client.release({ ...base });
     await client.release({ ...base, kind: "amend" });
-    expect(calls.map((c) => c.path)).toEqual(["/v1/check", "/v1/check-amend", "/v1/check-cancel", "/v1/release", "/v1/release"]);
+    expect(calls.map((c) => c.path)).toEqual(["/v1/orders/check", "/v1/orders/check-amend", "/v1/orders/check-cancel", "/v1/orders/release", "/v1/orders/release"]);
     expect(calls[0]!.body).toEqual({ ...base, side: "BUY", orderType: "MARKET", timeInForce: "IOC", price: null, qty: 2 });
     expect(calls[1]!.body).toEqual({ ...base, newPrice: 1200, newQty: null });
     expect(calls[2]!.body).toEqual(base);

@@ -419,7 +419,7 @@ sequenceDiagram
     C->>G: "POST /api/orders (decimal price)"
     G->>A: "JWKS (cached) / GET /internal/api-keys/verify"
     G->>G: "403 if blocked; token bucket + open orders (429)"
-    G->>R: "POST /v1/check (ticks)"
+    G->>R: "POST /v1/orders/check (ticks)"
     R-->>G: "approved / RiskRejected"
     G->>B: "commands.SYMBOL {correlationId, orderId, ticks}"
     B->>E: "sequenced command"
@@ -439,14 +439,14 @@ sequenceDiagram
   `bigint` arithmetic, so `"100.10"` is exactly 10010 ticks, and it rejects prices that are not on the instrument's
   tick grid. Replies render ticks back to decimal strings.
 - **Risk:** risk is called synchronously before every publish.
-  - Endpoints: `/v1/check` for places, `/v1/check-amend` for amends, `/v1/check-cancel` for cancels (ownership
+  - Endpoints: `/v1/orders/check` for places, `/v1/orders/check-amend` for amends, `/v1/orders/check-cancel` for cancels (ownership
     only).
   - Order ids: the gateway assigns the `orderId` (time, 4-bit instance id, counter), so risk can key its
     reservation on `(symbol, orderId)` before the engine sees the order.
   - Protected MARKET buys: risk returns a `limitPrice` for a MARKET buy. The gateway publishes the order as a LIMIT
     IOC (FOK stays FOK) at that price, so no fill can exceed the cash reserved.
   - Failures: if risk is unreachable or returns a 5xx, the request fails closed with 503.
-  - Releases: if the publish fails, the gateway calls `/v1/release` (`kind` `place` or `amend`). Everything after a
+  - Releases: if the publish fails, the gateway calls `/v1/orders/release` (`kind` `place` or `amend`). Everything after a
     successful publish (engine rejects, IOC remainders, fills, cancels) is settled by the portfolio consumer from
     `events.<symbol>`.
 - **Request/response over the bus:** each command carries a fresh `correlationId`. Before publishing, the gateway
