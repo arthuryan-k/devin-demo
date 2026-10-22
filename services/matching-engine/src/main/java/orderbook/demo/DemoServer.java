@@ -1,7 +1,6 @@
 package orderbook.demo;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -336,22 +335,21 @@ public final class DemoServer {
         return null;
     }
 
-    private void serveStatic(String path, String session, Response response, Callback callback) throws IOException {
+    private static final byte[] LANDING_PAGE = ("<!doctype html><title>Order Book Demo</title>"
+            + "<p>Order Book Demo matching engine API. The trading UI is the React app in <code>services/web</code>"
+            + " (<code>npm run dev</code>).</p>").getBytes(StandardCharsets.UTF_8);
+
+    /** {@code /} sets the browser session cookie (participant YOU) unless the caller already holds an auth-service JWT. */
+    private void serveStatic(String path, String session, Response response, Callback callback) {
         if (!path.equals("/") && !path.equals("/index.html")) {
             send(response, callback, 404, "text/plain", "not found".getBytes(StandardCharsets.UTF_8));
             return;
         }
-        try (InputStream in = DemoServer.class.getResourceAsStream("/demo/index.html")) {
-            if (in == null) {
-                send(response, callback, 500, "text/plain", "index.html missing".getBytes(StandardCharsets.UTF_8));
-                return;
-            }
-            if (!(authService && session != null && AuthServiceDirectory.isJwt(session))) {
-                response.getHeaders().put(HttpHeader.SET_COOKIE,
-                        SESSION_COOKIE + "=" + app.userKey() + "; Path=/; HttpOnly; SameSite=Strict");
-            }
-            send(response, callback, 200, "text/html; charset=utf-8", in.readAllBytes());
+        if (!(authService && session != null && AuthServiceDirectory.isJwt(session))) {
+            response.getHeaders().put(HttpHeader.SET_COOKIE,
+                    SESSION_COOKIE + "=" + app.userKey() + "; Path=/; HttpOnly; SameSite=Strict");
         }
+        send(response, callback, 200, "text/html; charset=utf-8", LANDING_PAGE);
     }
 
     private static void send(Response response, Callback callback, int status, String contentType, byte[] body) {
