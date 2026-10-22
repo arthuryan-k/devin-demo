@@ -1,0 +1,70 @@
+# Brokerage stack. `docker compose up --build` starts Postgres, applies db/migrations, then the services.
+name: devin-demo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: brokerage
+      POSTGRES_USER: brokerage
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brokerage}
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brokerage -d brokerage"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot Flyway job; every service that needs the schema waits for it to complete.
+  db-migrate:
+    image: flyway/flyway:10-alpine
+    command: ["-url=jdbc:postgresql://postgres:5432/brokerage", "-user=brokerage",
+              "-password=${POSTGRES_PASSWORD:-brokerage}", "-connectRetries=10", "migrate"]
+    volumes: ["./db/migrations:/flyway/sql:ro"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
+    command: ["redpanda", "start", "--mode", "dev-container", "--smp", "1", "--overprovisioned",
+              "--kafka-addr", "internal://0.0.0.0:9092,external://0.0.0.0:19092",
+              "--advertise-kafka-addr", "internal://redpanda:9092,external://localhost:19092"]
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  auth-service:
+    build: ./services/auth-service
+    environment:
+      DATABASE_URL: postgres://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+      # PKCS#8 PEM; without it each start generates a new signing key and earlier tokens stop verifying.
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+    ports: ["8081:8081"]
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+
+  reference-data-service:
+    build: ./services/reference-data-service
+    environment:
+      DATABASE_URL: postgres://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+    ports: ["8082:8082"]
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+
+  history-writer:
+    build: ./services/history-writer
+    environment:
+      DATABASE_URL: postgres://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+      redpanda: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
