@@ -1,0 +1,16 @@
+[project]
+name = "portfolio"
+version = "0.1.0"
+description = "Multi-asset portfolio ledger: shared cash, per-symbol positions, reservations and fill settlement"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["portfolio*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["kafka: needs a Kafka-compatible broker (Redpanda) via docker"]

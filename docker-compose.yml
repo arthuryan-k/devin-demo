@@ -114,6 +114,28 @@ services:
       redpanda: { condition: service_healthy }
     restart: unless-stopped
 
+  portfolio:
+    build: ./services/portfolio
+    environment:
+      DATABASE_URL: postgresql://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    ports: ["8091:8000"]
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+      redpanda: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Build context is services/: risk shares the portfolio ledger package.
+  risk:
+    build:
+      context: ./services
+      dockerfile: risk/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+    ports: ["8092:8000"]
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+
 volumes:
   pgdata:
   redpanda-data:

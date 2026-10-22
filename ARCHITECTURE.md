@@ -358,3 +358,46 @@ registers through `POST /participants/register` and trades over HTTP with its ow
 Every order from `YOU` is checked against its cash and share balance before it reaches the engine (the `Gateway`
 account reservation check above). Buys reserve cash and sells reserve shares until the order fills or is cancelled;
 fills settle at the trade price, and any unused reservation is refunded.
+
+## Portfolio and risk services
+
+Account money lives outside the engine, in two Python/FastAPI services over one Postgres schema, `portfolio`
+(Flyway migration `V3__portfolio_ledger.sql`): [`services/portfolio`](services/portfolio/README.md), the
+system of record and settlement consumer, and [`services/risk`](services/risk/README.md), the synchronous
+pre-trade check.
+
+```mermaid
+flowchart LR
+    G["Gateway"] -- "1. POST /v1/orders/check" --> R["risk"]
+    R -- "reserve (one txn, FOR UPDATE)" --> DB[("Postgres: portfolio.*")]
+    G -- "2. publish if approved" --> C["commands.SYMBOL"]
+    C --> E["Matching engine"]
+    E --> EV["events.SYMBOL"]
+    EV --> P["portfolio consumer"]
+    P -- "settle fills, cancels, rejects + offset (one txn)" --> DB
+    P -- "GET /v1/accounts/ID" --> UI["Frontend"]
+```
+
+- **Ledger model:** `accounts` (one shared `cash` / `reserved_cash` per participant), `positions` (`shares`,
+  `reserved_shares`, `cost_basis`, `realized_pnl` per account and symbol), `reservations` (one per approved order,
+  keyed `(symbol, order_id)`, with status `PENDING` -> `OPEN` -> `FILLED`/`CANCELLED`/`REJECTED`, or `RELEASED` when
+  the command never reached the engine), `fills`, `marks` (last trade per symbol) and `consumer_offsets`. Amounts are
+  BIGINT ticks. CHECK constraints keep every balance and reservation non-negative and reservations within holdings,
+  so a bug cannot commit a negative balance.
+- **Atomic reservations:** a check runs in one READ COMMITTED transaction that locks the account row, then the
+  position row, checks available = held - reserved, and inserts the reservation. Every writer, including settlement,
+  locks accounts before positions and reservations, in ascending id order. Risk retries the rare deadlock or
+  duplicate-id race. Concurrent checks on one account serialize on its cash row; other accounts don't contend.
+- **Buys reserve at the limit:** a fill at a better price releases `limit * qty` and debits `price * qty`, which
+  refunds the difference. Market buys reserve at a protection price (reference + collar) that the gateway sends as
+  the order's limit.
+- **Amends** reserve the extra amount as `pending_*` until `OrderAmended` confirms them (then the order's reservation
+  is re-sized) or `OrderRejected` drops them. Fills that arrive in between settle against the order's current
+  reservation.
+- **Settlement:** the consumer reads `^events\..*`. Each message is applied in one transaction with its offset
+  (`consumer_offsets`), so redelivery after a crash is a no-op. Ownership comes from the reservation, so events need
+  no participant ids. Trades on orders without a reservation only update the mark.
+- **Invariant audit:** `ledger.invariant_violations()` checks every account's reserved cash and reserved shares
+  against the sum of its live reservations, and checks for negative or over-reserved balances. Tests run it after
+  randomized multi-account, multi-symbol flows against a reference matcher.
+
