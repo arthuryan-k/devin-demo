@@ -1,18 +1,21 @@
 # devin-demo
 
-A price-time priority exchange in Java 17 with a market simulator that trades against it, and a professional
-React/TypeScript trading workstation on top, organized as a monorepo for a growing set of services.
+A multi-asset, price-time priority exchange as a monorepo of services: an empty matching core, a public REST/WebSocket
+gateway, a legacy FIX gateway, a market simulator that supplies all the liquidity, and a professional
+React/TypeScript trading workstation on top.
 
 **[Live demo](https://arthuryan-k.github.io/devin-demo/)** — the trading workstation running on in-browser demo data (log in as `demo` / `demo1234`).
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol pipelines, journal, market data).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol pipelines, journal, bus, services).
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
 | `services/` | One directory per deployable service; each builds on its own toolchain. |
-| `services/matching-engine/` | Java 17 / Maven: the exchange core (one matching engine, Disruptor pipeline and journal per symbol), participant HTTP API, market-data stream and market simulator. |
+| `services/matching-engine/` | Java 17 / Maven: the exchange core (one matching engine, Disruptor pipeline and journal per symbol) on the event bus. No built-in liquidity. |
+| `services/simulator/` | Java 17: the market simulator, a load generator of persona traders that each sign up for a real account and trade over the gateway. See its [README](services/simulator/README.md). |
+| `services/fix-gateway/` | Java 17, deliberately old-style: FIX 4.4 order entry onto the same bus topics. See its [README](services/fix-gateway/README.md). |
 | `services/gateway/` | TypeScript / Fastify: the single public API. It authenticates callers, rate-limits them, checks risk, places orders on the bus and returns the engine's result. Clients use decimal prices. See its [README](services/gateway/README.md). |
 | `services/market-data/` | Python / FastAPI: per-symbol WebSocket L2 feeds (snapshot, then ordered deltas, with resync on gaps). See its [README](services/market-data/README.md). |
 | `services/web/` | React 18 / TypeScript / Vite: the trading workstation. The same build runs against the gateway or, for the live demo, an in-browser fake exchange. |
@@ -21,12 +24,13 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol 
 | `services/reference-data-service/` | TypeScript / Fastify: the listed symbols and their trading parameters over REST. |
 | `services/history-writer/` | TypeScript / KafkaJS: writes `events.<symbol>` order lifecycle and fills to Postgres and serves them per participant (`GET /v1/orders`, `/v1/trades`). |
 | `db/migrations/` | Flyway SQL migrations for the brokerage database. |
+| `tests/e2e/` | End-to-end checks against the running compose stack (simulator, accounts, FIX round trip). |
 | `docker-compose.yml` | Postgres, migrations, the Redpanda (Kafka API) event bus, the matching engine and the services above. |
 | `ARCHITECTURE.md` | Internals of the services. |
 | `.github/workflows/` | CI: tests the matching engine and the web app, and deploys the live demo to GitHub Pages. |
 
-Listed symbols (served by the reference-data service, built in otherwise): `ACME`, `GLOBX`, `INITD`, `NVTA`. Every book starts empty, with no liquidity and no price; the demo
-and simulator currently trade `ACME`.
+Listed symbols (served by the reference-data service, built in otherwise): `ACME`, `GLOBX`, `INITD`, `NVTA`. Every book starts empty, with no liquidity and no price; the
+simulator trades all four.
 
 ## What is this
 
@@ -34,8 +38,23 @@ A limit order book is the core of an exchange: buyers and sellers post orders at
 trade, and the matching engine pairs them up, best price first and, at the same price, first come first served. The
 matching engine hosts one order book per symbol; each supports limit and market orders, good-till-cancelled,
 immediate-or-cancel and fill-or-kill orders, amends, cancels and self-trade prevention, with every order recorded in
-a crash-safe journal. Around it sits an interactive demo: a simulated market full of trading bots, which you can
-join and trade against from your browser or over an HTTP API.
+a crash-safe journal. The engine itself never quotes: every order comes from outside, through the REST gateway or
+the FIX gateway. A simulated market full of trading bots supplies the liquidity, and you can join it from the
+browser, over the HTTP API or over FIX.
+
+```mermaid
+flowchart LR
+    U["Browser (services/web)"] --> GW["gateway"]
+    B["API clients"] --> GW
+    S["simulator (persona bots)"] --> GW
+    F["FIX clients"] --> FX["fix-gateway"]
+    GW --> BUS["event bus"]
+    FX --> BUS
+    BUS --> E["matching-engine"]
+    E --> BUS
+    BUS --> MD["market-data"]
+    MD --> GW
+```
 
 ## Trading workstation
 
@@ -73,77 +92,55 @@ npm run build:pages                   # static Pages bundle into dist-pages/
 
 `npm run dev` proxies `/api` to `GATEWAY_URL` and `/ws` to `MARKET_DATA_URL` (default: the gateway).
 
-## Matching engine demo
-
-1. Run the matching engine (`mvn compile exec:java`, below) and start the simulated market with
-   `curl -X POST localhost:8080/simulate/start` (it starts stopped).
-2. You trade as participant **YOU**, with a cash and share balance.
-3. Place limit or market orders, cancel them, or amend their price and quantity.
-4. The order book, trade tape and event log update live as your orders and the simulated participants' orders are
-   matched.
-
-```mermaid
-flowchart LR
-    U["You (browser)"] -- "orders, cancels, amends" --> E
-    A["HTTP API clients"] -- "orders, cancels, amends (API key)" --> E
-    S["Simulated participants"] -- "orders, cancels, amends" --> E
-    E["Matching engine"] -- "live book, trades, events" --> U
-    E -- "responses" --> A
-    E -- "market snapshots" --> S
-```
-
-## Participant API
-
-Every participant, including each simulated one, is an API client identified by an API key.
-
-| Endpoint | Auth | Purpose |
-|---|---|---|
-| `POST /participants/register` (optional form field `name`) | none | Returns `{"participantId":1001,"label":"name-1001","apiKey":"ob_…"}` |
-| `POST /api/orders` (`side`, `type`, `price`, `qty`, `timeInForce`) | `X-Api-Key` | Place an order as that participant |
-| `PATCH /api/orders/{id}` (`price` and/or `qty`) | `X-Api-Key` | Amend one of your resting orders |
-| `DELETE /api/orders/{id}` | `X-Api-Key` | Cancel one of your resting orders |
-
-```
-KEY=$(curl -s -d name=alice localhost:8080/participants/register | sed 's/.*"apiKey":"\([^"]*\)".*/\1/')
-curl -s -H "X-Api-Key: $KEY" -d 'side=BUY&type=LIMIT&price=99.50&qty=10' localhost:8080/api/orders
-```
-
-- With the auth service (`AUTH_SERVICE_URL`), registrations are real accounts in Postgres, and a signed-up user's
-  session (`POST /auth/signup` or `/auth/login` on the [auth service](services/auth-service/README.md)) trades as
-  that account.
-- A missing or unknown key gets `401`; you can only amend or cancel your own orders.
-- Each participant is limited to 200 messages/sec (burst 400) and 100 open orders; breaches get `429`.
-- After 100 violations a participant is blocked with `403`. `POST /api/reset` clears the counters.
-
 ## Market simulator
 
-- **Order flow:** orders arrive as a Poisson process (exponential inter-arrival times) at an adjustable rate.
-- **Reference price:** a hidden fair value follows a random walk with rare jumps. Each jump starts a volatility
-  shock that fades out over 12 seconds. During a shock, prices move more, market makers quote wider, and
-  participants are more likely to leave.
-- **Participants:** 2–8 are active at once. They join and leave over time, with more leaving after shocks. A
-  participant cancels its resting orders before leaving.
+The simulator (`services/simulator/`) is the only source of liquidity and price discovery. It runs a population of
+persona traders on every symbol, each with its **own real account**, signing up and trading through the public
+gateway exactly like an outside bot. Stop it and the books drain.
+
+- **Order flow:** orders arrive as a Poisson process at an adjustable rate, spread over the four symbols.
+- **Reference price per symbol:** a hidden fair value follows a random walk with drift and rare jumps. Each jump
+  starts a volatility shock that fades out: prices move more, market makers quote wider and participants leave more.
+- **Participants:** they join and leave over time; a participant cancels its resting orders before leaving.
+- **Reproducible:** the arrival process is reproducible from a seed (the exchange's sequence numbers are not; see
+  [ARCHITECTURE.md](ARCHITECTURE.md#clock-and-determinism)).
 
 | Persona | Share | Strategy |
 |---|---|---|
-| Market maker | ~58% | Posts small GTC quotes on both sides near the reference price. It re-quotes as the price drifts and refills an empty side of the book. Its spread and readiness to leave depend on its risk tolerance. It tracks the net of its own fills and shrinks its quotes on the side that would add to its inventory. |
+| Market maker | ~58% | Posts small GTC quotes on both sides near the reference price. It re-quotes as the price drifts and refills an empty side of the book. Its spread and readiness to leave depend on its risk tolerance. It shrinks its quotes on the side that would add to its inventory. |
 | Aggressive taker | ~19% | Sends market and IOC orders, sometimes sweeping several levels. It follows recent drift, buying 55% of the time after the price rises and 45% after it falls. |
 | Maintenance trader | ~19% | Keeps a few resting orders and cancels, resizes or reprices them. |
 | Whale | ~4% | Occasionally sends a large market sweep, which triggers a volatility shock. |
 
-## Your account
+Control it on `:8095`:
 
-Balances live outside the engine. The portfolio service holds each account's shared cash, per-symbol positions and
-P&L, and the risk service reserves cash or shares before an order reaches the engine. In this standalone demo, `YOU`
-trades without a balance check.
+```
+curl -s localhost:8095/admin/status
+curl -s -X POST localhost:8095/admin/stop                      # everyone leaves, cancelling their orders
+curl -s -X POST localhost:8095/admin/start
+curl -s -X POST 'localhost:8095/admin/rate?value=50'           # orders per second, all symbols
+curl -s -X POST 'localhost:8095/admin/participants?value=6'    # target population per symbol
+curl -s -X POST 'localhost:8095/admin/reset?seed=7'
+```
+
+## FIX gateway
+
+`services/fix-gateway/` accepts FIX 4.4 sessions on `:9878`: Logon with your API key as the password (tag 554), then
+NewOrderSingle, OrderCancelRequest and OrderCancelReplaceRequest, answered with ExecutionReports. FIX orders go
+through the same risk check and onto the same bus topics as REST orders, so a FIX client and a REST client trade in
+the same book.
+
+```text
+8=FIX.4.4|9=..|35=A|49=ME|56=FIXGW|34=1|52=...|98=0|108=30|553=alice|554=ob_...|10=...
+8=FIX.4.4|9=..|35=D|49=ME|56=FIXGW|34=2|52=...|11=c1|55=ACME|54=1|40=2|44=100.25|38=10|59=1|10=...
+```
 
 ## Build and run
 
 From `services/matching-engine/`:
 
 ```
-mvn test                              # engine, simulator, server and property tests
-mvn compile exec:java                 # local server at http://localhost:8080/ (SIM_SEED=42 for a fixed seed)
+mvn test                              # engine, pipeline, journal, bus codec and property tests
 mvn verify                            # plus the Redpanda integration tests (needs Docker)
 ```
 
@@ -172,7 +169,6 @@ curl -s -H 'content-type: application/json' -d '{"username":"alice","password":"
 docker compose exec postgres psql -U brokerage -c 'select * from trades_history order by id desc limit 5'
 ```
 
-To run the server on top of them, start it with `AUTH_SERVICE_URL=http://localhost:8081 REFDATA_URL=http://localhost:8082 mvn compile exec:java`.
 Service ownership and contracts are in [ARCHITECTURE.md](ARCHITECTURE.md#brokerage-services-and-postgres).
 
 ### Through the gateway
@@ -188,3 +184,10 @@ curl -s localhost:8080/api/orders -H "authorization: Bearer $TOKEN" -H 'content-
 ```
 
 To stream the book, open a WebSocket at `ws://localhost:8080/marketdata/ACME/ws`.
+
+### Full stack with the simulator
+
+`docker compose up --build` also starts the risk and portfolio services, the gateway, market data, the simulator
+(trading on start) and the FIX gateway. Point the workstation at it with `npm run dev` in `services/web/`. With the
+stack up, `python3 tests/e2e/test_sim_fix_e2e.py` checks the simulator's accounts and flow, its controls, and a FIX
+order filling against a REST order.
