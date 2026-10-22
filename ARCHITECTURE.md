@@ -402,3 +402,88 @@ flowchart LR
   against the sum of its live reservations, and checks for negative or over-reserved balances. Tests run it after
   randomized multi-account, multi-symbol flows against a reference matcher.
 
+## Gateway
+
+`services/gateway` (TypeScript, Fastify) is the only public HTTP entry point. Its user-facing API is documented in
+[services/gateway/README.md](services/gateway/README.md). Each order request runs these steps in order, and each
+step can end it:
+
+```mermaid
+sequenceDiagram
+    participant C as "Client"
+    participant G as "Gateway"
+    participant A as "auth-service"
+    participant R as "risk"
+    participant B as "Redpanda"
+    participant E as "matching-engine"
+    C->>G: "POST /api/orders (decimal price)"
+    G->>A: "JWKS (cached) / GET /internal/api-keys/verify"
+    G->>G: "403 if blocked; token bucket + open orders (429)"
+    G->>R: "POST /v1/orders/check (ticks)"
+    R-->>G: "approved / RiskRejected"
+    G->>B: "commands.SYMBOL {correlationId, orderId, ticks}"
+    B->>E: "sequenced command"
+    E->>B: "events.SYMBOL {seq, correlationId, events}"
+    B->>G: "event record"
+    G-->>C: "200 {orderId, seq, events (decimal)}"
+```
+
+- **Authentication:** session JWTs (RS256) are checked locally against auth-service's JWKS (`kid` lookup; keys
+  cached). API keys go to `GET /internal/api-keys/verify` with the key in a header. Answers are cached for 30 s by
+  SHA-256 of the key, so the plaintext key is never stored.
+- **Admission control:** a port of the Java `AdmissionControl`/`TokenBucket`. Each participant has its own bucket
+  (200 msg/s, burst 400). An add order is refused once the participant has 100 open orders. Each refusal counts as
+  a violation, and after 100 violations every request returns 403. Open orders are counted from the gateway's order
+  index: an `OrderPlaced` that is still resting, plus placements in flight.
+- **Prices:** prices are converted at this edge and nowhere else. `TickConverter` parses decimal strings with
+  `bigint` arithmetic, so `"100.10"` is exactly 10010 ticks, and it rejects prices that are not on the instrument's
+  tick grid. Replies render ticks back to decimal strings.
+- **Risk:** risk is called synchronously before every publish.
+  - Endpoints: `/v1/orders/check` for places, `/v1/orders/check-amend` for amends, `/v1/orders/check-cancel` for cancels (ownership
+    only).
+  - Order ids: the gateway assigns the `orderId` (time, 4-bit instance id, counter), so risk can key its
+    reservation on `(symbol, orderId)` before the engine sees the order.
+  - Protected MARKET buys: risk returns a `limitPrice` for a MARKET buy. The gateway publishes the order as a LIMIT
+    IOC (FOK stays FOK) at that price, so no fill can exceed the cash reserved.
+  - Failures: if risk is unreachable or returns a 5xx, the request fails closed with 503.
+  - Releases: if the publish fails, the gateway calls `/v1/orders/release` (`kind` `place` or `amend`). Everything after a
+    successful publish (engine rejects, IOC remainders, fills, cancels) is settled by the portfolio consumer from
+    `events.<symbol>`.
+- **Request/response over the bus:** each command carries a fresh `correlationId`. Before publishing, the gateway
+  registers a pending promise for that id with the `Correlator`, so even an immediate reply can't be missed. The
+  publish uses kafkajs with an idempotent producer and `acks=all`, keyed by symbol (one partition per topic, so
+  the engine sees commands in order).
+  - Each gateway instance reads `events.<symbol>` with its own consumer group from the beginning of the topic.
+    Every record updates the order index (owner, symbol, open/closed), and a record whose `correlationId` is
+    pending resolves that HTTP call with the engine's `seq` and events.
+  - Records for other instances' commands only update the index, so ownership checks and open-order counts see
+    every participant's orders, whichever replica placed them.
+  - If no reply arrives within `RESPONSE_TIMEOUT_MS`, the call returns 504 with the `orderId` and
+    `correlationId`. The command may still execute.
+- **Edge routing:** auth-service's public routes (`/auth/*`, `/api/auth/*` as an alias, `/api-keys`,
+  `/participants/register`) and `/marketdata/*` are proxied by `@fastify/http-proxy`, including cookies and
+  WebSocket upgrades. `/internal/*` is not routed.
+
+## Market-data service
+
+`services/market-data` (Python, FastAPI, aiokafka) replaces the engine's in-process SSE fan-out with a separate,
+horizontally scalable service. Its message formats are documented in
+[services/market-data/README.md](services/market-data/README.md).
+
+- **Upstream:** a `KafkaSource` assigns partition 0 of every `marketdata.<symbol>` topic directly, with no consumer
+  group, and starts from the beginning of each log, so every replica rebuilds the same books.
+- **Per-symbol state:** each `SymbolFeed` owns its own L2 replica (`price -> (qty, orders)` per side), recent
+  trades and events, `seq`, and subscriber set. All of it runs on one asyncio loop, so taking a snapshot and
+  registering a subscriber happen atomically with respect to applying deltas. That is the same guarantee the Java
+  publisher gets from its lock.
+- **Upstream gaps:** a delta is applied only if its `seq` is exactly `last + 1`. A delta with seq 0 (the engine's first command) on an empty
+  feed starts from an empty book, and a snapshot replaces the book.
+  - On a gap, the feed resets and seeks its partition back to the offset of the last snapshot it saw (or 0). It
+    replays silently until it has passed the seq that exposed the gap, then sends every subscriber a `resync`
+    snapshot.
+  - If the replay still has the hole, because the log itself is missing records, the feed stays not-ready until
+    the next upstream snapshot.
+- **Downstream:** each WebSocket has a bounded queue (`MAX_BACKLOG`) and one sender task.
+  - A client that falls behind has its queue replaced by a single `slow-consumer` snapshot, so a slow client costs
+    O(book) memory, not O(backlog).
+  - Prices are rendered per subscriber, as decimal strings by default or as raw ticks with `?prices=ticks`.
