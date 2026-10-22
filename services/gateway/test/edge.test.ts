@@ -74,3 +74,26 @@ describe("edge routing to auth-service", () => {
     expect(auth.seen).toContain("POST /auth/login");
   });
 });
+
+describe("upstream proxies", () => {
+  it("rewrites a prefix onto the upstream path and passes the principal", async () => {
+    const seen: { url: string; pid?: string }[] = [];
+    const upstream = Fastify();
+    upstream.get("/*", async (req) => {
+      seen.push({ url: req.url, pid: req.headers["x-participant-id"] as string });
+      return { ok: true };
+    });
+    const url = await upstream.listen({ port: 0, host: "127.0.0.1" });
+    const h = await harness();
+    const app = await buildApp({ orders: h.orders, auth: h.auth, symbols: h.symbols, upstreams: { "/api/reference": `${url}/`, "/api/portfolio": `${url}/v1/accounts` } });
+    cleanup.push(() => upstream.close(), () => app.close(), () => h.app.close());
+
+    expect((await app.inject({ method: "GET", url: "/api/reference/symbols" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/reference/symbols", headers: { "x-api-key": "key-alice" } })).json()).toEqual({ ok: true });
+    await app.inject({ method: "GET", url: "/api/portfolio/1001", headers: { "x-api-key": "key-alice" } });
+    expect(seen).toEqual([
+      { url: "/symbols", pid: String(ALICE.participantId) },
+      { url: "/v1/accounts/1001", pid: String(ALICE.participantId) },
+    ]);
+  });
+});

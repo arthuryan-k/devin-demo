@@ -37,7 +37,7 @@ curl -s localhost:8080/api/orders -H "authorization: Bearer $TOKEN" -H 'content-
 | `GET /api/symbols` | no | instruments with tick and lot size |
 | `GET /api/me` | yes | the authenticated principal |
 | `/auth/*`, `/api/auth/*`, `/api-keys`, `POST /participants/register` | auth-service rules | proxied to [auth-service](../auth-service/README.md): signup, login, logout, me, API keys, simulated participants |
-| `/marketdata/*` (incl. WebSocket) | no | proxied to [market-data](../market-data/README.md), e.g. `ws://localhost:8080/marketdata/ACME/ws` |
+| `/marketdata/*`, `/ws/marketdata/*` (incl. WebSocket) | no | proxied to [market-data](../market-data/README.md), e.g. `ws://localhost:8080/marketdata/ACME/ws` |
 | `GET /healthz` | no | |
 
 The order routes return `200` with the engine's events for that command, prices as decimal strings and the engine
@@ -71,7 +71,7 @@ Error bodies are `{"error": "<message>", "reason": "<CODE>"}`.
 | `RISK_URL` | `http://localhost:8092` | |
 | `REFERENCE_DATA_URL` | unset | symbols from `GET /symbols`. Without it: ACME, GLOBX, INITD, NVTA at 0.01 |
 | `MARKET_DATA_URL` | unset | enables the `/marketdata` proxy |
-| `UPSTREAMS` | unset | extra authenticated proxies, e.g. `/api/portfolio=http://portfolio:8000`. They get `X-Participant-Id`/`X-Account-Id` |
+| `UPSTREAMS` | unset | extra authenticated proxies, `prefix=url`, comma-separated. A path on the URL replaces the prefix, e.g. `/api/reference=http://reference-data-service:8082/` serves `/api/reference/symbols` from `/symbols`. Upstreams receive `X-Participant-Id`/`X-Account-Id` |
 | `SYMBOLS` | all | restrict to a comma-separated subset |
 | `GATEWAY_INSTANCE` | `0` | 0–15, part of every order id. Must be unique per replica |
 | `RESPONSE_TIMEOUT_MS` | `5000` | |

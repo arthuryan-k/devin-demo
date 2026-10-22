@@ -51,6 +51,14 @@ def create_app(hub: FeedHub, source: Optional[Source] = None) -> FastAPI:
 
     @app.websocket("/marketdata/{symbol}/ws")
     async def stream(websocket: WebSocket, symbol: str, prices: str = "decimal") -> None:
+        await _serve(websocket, symbol, prices)
+
+    @app.websocket("/ws/marketdata/{symbol}")
+    async def stream_ticks(websocket: WebSocket, symbol: str, prices: str = "ticks") -> None:
+        """The web UI's path: same feed, integer ticks by default like the Java SSE wire format."""
+        await _serve(websocket, symbol, prices)
+
+    async def _serve(websocket: WebSocket, symbol: str, prices: str) -> None:
         await websocket.accept()
         feed = hub.feed(symbol)
         if feed is None:

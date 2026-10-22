@@ -127,3 +127,10 @@ def test_rest_snapshot_and_symbols(exchange):
     exchange.publish("GLOBX", snapshot(7, bids=[(201, 1, 1)]))
     assert exchange.client.get("/marketdata/GLOBX/snapshot").json()["bids"] == [["10.05", 1, 1]]
     assert [s["symbol"] for s in exchange.client.get("/marketdata/symbols").json()["symbols"]] == ["ACME", "GLOBX"]
+
+
+def test_web_ui_path_defaults_to_ticks(exchange):
+    exchange.publish("ACME", snapshot(3, bids=[(10050, 1, 1)]))
+    with exchange.client.websocket_connect("/ws/marketdata/acme") as ws:
+        snap = ws.receive_json()
+        assert (snap["symbol"], snap["bids"]) == ("ACME", [[10050, 1, 1]])

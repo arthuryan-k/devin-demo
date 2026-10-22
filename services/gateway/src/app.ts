@@ -17,7 +17,10 @@ export interface AppDeps {
   sessionCookie?: string;
   /** Market-data service base URL; {@code /marketdata/*} (incl. WebSocket upgrades) is proxied to it. */
   marketDataUrl?: string;
-  /** Forwarded routes: public prefix -> upstream base URL (e.g. portfolio, history). */
+  /**
+   * Authenticated forwarded routes: public prefix -> upstream URL. A path on the URL replaces the prefix
+   * (no path keeps it; {@code http://reference-data:8082/} maps {@code /api/reference/x} to {@code /x}).
+   */
   upstreams?: Record<string, string>;
   logger?: boolean;
 }
@@ -92,13 +95,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     }
   }
 
-  for (const [prefix, upstream] of Object.entries(deps.upstreams ?? {})) {
+  for (const [prefix, target] of Object.entries(deps.upstreams ?? {})) {
+    const url = new URL(target);
+    const path = /^[a-z][a-z0-9+.-]*:\/\/[^/]+(\/.*)?$/i.exec(target)?.[1];
+    const rewritePrefix = path === undefined ? prefix : path.replace(/\/$/, "");
     await app.register(async (scope) => {
       scope.addHook("preHandler", authenticate);
       await scope.register(httpProxy, {
-        upstream,
+        upstream: url.origin,
         prefix,
-        rewritePrefix: prefix,
+        rewritePrefix,
         replyOptions: {
           rewriteRequestHeaders: (request, headers) => ({
             ...headers,
@@ -111,12 +117,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   }
 
   if (deps.marketDataUrl) {
-    await app.register(httpProxy, {
-      upstream: deps.marketDataUrl,
-      prefix: "/marketdata",
-      rewritePrefix: "/marketdata",
-      websocket: true,
-    });
+    for (const prefix of ["/marketdata", "/ws/marketdata"]) {
+      await app.register(httpProxy, { upstream: deps.marketDataUrl, prefix, rewritePrefix: prefix, websocket: true });
+    }
   }
 
   return app;

@@ -12,6 +12,7 @@ Redpanda broker).
 | Route | |
 | --- | --- |
 | `GET /marketdata/{symbol}/ws` (WebSocket) | live feed for one symbol; `?prices=ticks` for integer ticks instead of decimal strings |
+| `GET /ws/marketdata/{symbol}` (WebSocket) | same feed for the web UI, integer ticks by default (`?prices=decimal` to switch) |
 | `GET /marketdata/{symbol}/snapshot` | current book as one snapshot message |
 | `GET /marketdata/symbols` | symbols served, with tick size and current `seq` |
 | `GET /healthz` | per-symbol `seq`, `ready`, subscriber count and upstream gap count |
