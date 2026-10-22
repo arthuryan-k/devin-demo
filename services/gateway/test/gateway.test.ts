@@ -134,6 +134,47 @@ describe("synchronous risk", () => {
   });
 });
 
+describe("risk contract details", () => {
+  it("sends a protected MARKET buy as LIMIT IOC at risk's limitPrice", async () => {
+    h = await harness();
+    await place(asBob, { symbol: "ACME", side: "SELL", price: "10.00", qty: 3 });
+    h.risk.decide = (r) => (r.orderType === "MARKET" ? { approved: true, limitPrice: 1050 } : { approved: true });
+    const res = await place(asAlice, { symbol: "ACME", side: "BUY", type: "MARKET", qty: 2 });
+    expect(h.risk.checks[1]).toMatchObject({ action: "PLACE", orderType: "MARKET", price: null, qty: 2 });
+    expect(JSON.parse(h.bus.records("commands.ACME")[1]!.value)).toMatchObject({ orderType: "LIMIT", timeInForce: "IOC", price: 1050 });
+    expect(res.json().events).toEqual([
+      expect.objectContaining({ type: "OrderPlaced", price: "10.50" }),
+      expect.objectContaining({ type: "TradeExecuted", price: "10.00", qty: 2 }),
+    ]);
+  });
+
+  it("asks risk to confirm cancels and surfaces its rejection", async () => {
+    h = await harness();
+    const id = (await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 })).json().orderId;
+    h.risk.decide = (r) => (r.action === "CANCEL" ? { approved: false, reason: "NOT_OWN_OPEN_ORDER", message: "not yours" } : { approved: true });
+    const res = await h.app.inject({ method: "DELETE", url: `/api/orders/${id}`, headers: asAlice });
+    expect(res.json().events[0]).toMatchObject({ type: "RiskRejected", reason: "NOT_OWN_OPEN_ORDER" });
+    expect(h.risk.checks[1]).toMatchObject({ action: "CANCEL", orderId: id, symbol: "ACME" });
+    expect(h.bus.records("commands.ACME")).toHaveLength(1);
+  });
+
+  it("releases an amend reservation when the amend cannot be published", async () => {
+    h = await harness();
+    const id = (await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 })).json().orderId;
+    h.bus.failNextPublish = new Error("broker down");
+    const res = await h.app.inject({ method: "PATCH", url: `/api/orders/${id}`, headers: asAlice, payload: { qty: 5 } });
+    expect(res.statusCode).toBe(503);
+    expect(h.risk.releases).toEqual([expect.objectContaining({ orderId: id, kind: "amend" })]);
+  });
+
+  it("does not release on an engine timeout (the portfolio consumer settles from events)", async () => {
+    h = await harness({ timeoutMs: 30 });
+    h.engine.paused = true;
+    expect((await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 })).statusCode).toBe(504);
+    expect(h.risk.releases).toHaveLength(0);
+  });
+});
+
 describe("command -> event correlation", () => {
   it("returns the engine result for the caller's own command, with seq and decimal prices", async () => {
     h = await harness();

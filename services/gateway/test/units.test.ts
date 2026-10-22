@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { AdmissionControl, TokenBucket } from "../src/admission.js";
 import { HttpAuthenticator } from "../src/auth.js";
+import { HttpRiskClient, RiskUnavailable } from "../src/risk.js";
 import { TickConverter } from "../src/ticks.js";
 
 describe("TickConverter", () => {
@@ -83,5 +84,40 @@ describe("HttpAuthenticator", () => {
     expect(await auth.apiKey("good")).not.toBeNull();
     expect(await auth.apiKey("bad")).toBeNull();
     expect(calls).toEqual(["http://auth/internal/api-keys/verify good", "http://auth/internal/api-keys/verify bad"]);
+  });
+});
+
+describe("HttpRiskClient", () => {
+  const recorder = (reply: (path: string) => Response) => {
+    const calls: { path: string; body: Record<string, unknown> }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      calls.push({ path, body: JSON.parse(String(init?.body)) });
+      return reply(path);
+    }) as unknown as typeof fetch;
+    return { calls, client: new HttpRiskClient("http://risk:8000", 1_000, fetchImpl) };
+  };
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+  const base = { participantId: 1001, accountId: 7, symbol: "ACME", orderId: 5 };
+
+  it("maps place / amend / cancel / release onto the /v1 routes", async () => {
+    const { calls, client } = recorder(() => json({ approved: true, orderId: 5, limitPrice: 1050 }));
+    expect(await client.check({ ...base, action: "PLACE", side: "BUY", orderType: "MARKET", timeInForce: "IOC", price: null, qty: 2 })).toEqual({ approved: true, limitPrice: 1050 });
+    await client.check({ ...base, action: "AMEND", price: 1200, qty: null });
+    await client.check({ ...base, action: "CANCEL", price: null, qty: null });
+    await client.release({ ...base });
+    await client.release({ ...base, kind: "amend" });
+    expect(calls.map((c) => c.path)).toEqual(["/v1/check", "/v1/check-amend", "/v1/check-cancel", "/v1/release", "/v1/release"]);
+    expect(calls[0]!.body).toEqual({ ...base, side: "BUY", orderType: "MARKET", timeInForce: "IOC", price: null, qty: 2 });
+    expect(calls[1]!.body).toEqual({ ...base, newPrice: 1200, newQty: null });
+    expect(calls[2]!.body).toEqual(base);
+    expect([calls[3]!.body.kind, calls[4]!.body.kind]).toEqual(["place", "amend"]);
+  });
+
+  it("returns rejections and fails closed on 5xx", async () => {
+    const reject = recorder(() => json({ approved: false, orderId: 5, reason: "NO_SHORTING", message: "no shares" }));
+    expect(await reject.client.check({ ...base, action: "PLACE", side: "SELL", price: 100, qty: 1 })).toEqual({ approved: false, reason: "NO_SHORTING", message: "no shares" });
+    const down = recorder(() => json({}, 503));
+    await expect(down.client.check({ ...base, action: "PLACE", price: 100, qty: 1 })).rejects.toBeInstanceOf(RiskUnavailable);
   });
 });

@@ -58,7 +58,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     jwtAudience: env.JWT_AUDIENCE ?? "devin-demo",
     internalToken: env.INTERNAL_TOKEN || undefined,
     sessionCookie: env.SESSION_COOKIE ?? "ob_session",
-    riskUrl: env.RISK_URL ?? "http://localhost:8083",
+    riskUrl: env.RISK_URL ?? "http://localhost:8092",
     referenceDataUrl: env.REFERENCE_DATA_URL || undefined,
     marketDataUrl: env.MARKET_DATA_URL || undefined,
     upstreams: upstreams(env.UPSTREAMS),

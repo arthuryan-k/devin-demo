@@ -29,13 +29,13 @@ export class FakeAuth implements Authenticator {
 
 export class FakeRisk implements RiskClient {
   checks: RiskRequest[] = [];
-  releases: { orderId: number }[] = [];
+  releases: { orderId: number; kind?: string }[] = [];
   decide: (r: RiskRequest) => RiskDecision = () => ({ approved: true });
   async check(r: RiskRequest) {
     this.checks.push(r);
     return this.decide(r);
   }
-  async release(r: { orderId: number }) {
+  async release(r: { orderId: number; kind?: string }) {
     this.releases.push(r);
   }
 }

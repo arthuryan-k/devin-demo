@@ -2,7 +2,7 @@ import type { OrderType, Side, TimeInForce } from "./contracts.js";
 
 /** One pre-trade check; prices are integer ticks. Amends carry the order's new price/qty. */
 export interface RiskRequest {
-  action: "PLACE" | "AMEND";
+  action: "PLACE" | "AMEND" | "CANCEL";
   participantId: number;
   accountId?: string | number;
   symbol: string;
@@ -14,13 +14,26 @@ export interface RiskRequest {
   qty: number | null;
 }
 
-export type RiskDecision = { approved: true } | { approved: false; reason: string; message: string };
+/**
+ * {@code limitPrice} (ticks) is risk's protection price for a MARKET order: the most the order may pay (buy) or least
+ * it may receive (sell) given what was reserved. The gateway then sends it to the engine as a LIMIT IOC/FOK.
+ */
+export type RiskDecision = { approved: true; limitPrice?: number } | { approved: false; reason: string; message: string };
 
 /** The synchronous risk service: reserves cash/shares before the order reaches the engine. */
 export interface RiskClient {
   check(request: RiskRequest): Promise<RiskDecision>;
   /** Releases a reservation the gateway took but could not publish. */
-  release(request: { participantId: number; accountId?: string | number; symbol: string; orderId: number }): Promise<void>;
+  release(request: ReleaseRequest): Promise<void>;
+}
+
+/** {@code kind} says which reservation to drop: the order's ({@code place}) or a pending amend's. */
+export interface ReleaseRequest {
+  participantId: number;
+  accountId?: string | number;
+  symbol: string;
+  orderId: number;
+  kind?: "place" | "amend";
 }
 
 export class RiskUnavailable extends Error {}
@@ -33,10 +46,18 @@ export class HttpRiskClient implements RiskClient {
   ) {}
 
   async check(request: RiskRequest): Promise<RiskDecision> {
-    const res = await this.post("/risk/check", request);
+    const { action, price, qty, ...rest } = request;
+    const key = { participantId: rest.participantId, accountId: rest.accountId, symbol: rest.symbol, orderId: rest.orderId };
+    const res =
+      action === "AMEND"
+        ? await this.post("/v1/check-amend", { ...key, newPrice: price, newQty: qty })
+        : action === "CANCEL"
+          ? await this.post("/v1/check-cancel", key)
+          : await this.post("/v1/check", { ...rest, price, qty });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (res.ok && body.approved !== false) {
-      return { approved: true };
+      const limitPrice = Number(body.limitPrice ?? body.protectionPrice);
+      return Number.isSafeInteger(limitPrice) && limitPrice > 0 ? { approved: true, limitPrice } : { approved: true };
     }
     if (res.status >= 500) {
       throw new RiskUnavailable(`risk service returned ${res.status}`);
@@ -48,8 +69,8 @@ export class HttpRiskClient implements RiskClient {
     };
   }
 
-  async release(request: { participantId: number; symbol: string; orderId: number }): Promise<void> {
-    const res = await this.post("/risk/release", request);
+  async release(request: ReleaseRequest): Promise<void> {
+    const res = await this.post("/v1/release", { kind: "place", ...request });
     if (!res.ok && res.status !== 404) {
       throw new RiskUnavailable(`risk service returned ${res.status}`);
     }

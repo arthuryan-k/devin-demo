@@ -108,15 +108,20 @@ export class OrderService {
       price,
       qty,
     });
-    if (decision) {
+    if (!decision.approved) {
       return riskRejected(orderId, symbol, who, decision);
     }
+    // A protected MARKET order goes to the engine as an aggressive LIMIT that can never rest.
+    const sent =
+      orderType === "MARKET" && side === "BUY" && decision.limitPrice !== undefined
+        ? { orderType: "LIMIT" as const, timeInForce: timeInForce === "FOK" ? ("FOK" as const) : ("IOC" as const), price: decision.limitPrice }
+        : { orderType, timeInForce, price };
     this.deps.index.remember(orderId, symbol);
     this.deps.index.placeStarted(who.participantId);
     try {
       return await this.send(
         ticks,
-        { type: "Place", correlationId: randomUUID(), participantId: who.participantId, symbol, orderId, side, orderType, timeInForce, price, qty },
+        { type: "Place", correlationId: randomUUID(), participantId: who.participantId, symbol, orderId, side, ...sent, qty },
         () => this.deps.risk.release({ participantId: who.participantId, accountId: who.accountId, symbol, orderId }),
       );
     } finally {
@@ -130,6 +135,11 @@ export class OrderService {
     const notOwn = this.notOwn(who, orderId, symbol);
     if (notOwn) {
       return notOwn;
+    }
+    // Risk owns the ledger across gateway instances; it confirms ownership but reserves nothing for a cancel.
+    const decision = await this.risk({ action: "CANCEL", participantId: who.participantId, accountId: who.accountId, symbol, orderId, price: null, qty: null });
+    if (!decision.approved) {
+      return riskRejected(orderId, symbol, who, decision);
     }
     return this.send(ticks, { type: "Cancel", correlationId: randomUUID(), participantId: who.participantId, symbol, orderId });
   }
@@ -157,7 +167,7 @@ export class OrderService {
       price: newPrice,
       qty: newQty,
     });
-    if (decision) {
+    if (!decision.approved) {
       return riskRejected(orderId, symbol, who, decision);
     }
     return this.send(ticks, {
@@ -168,7 +178,7 @@ export class OrderService {
       orderId,
       newPrice,
       newQty,
-    });
+    }, () => this.deps.risk.release({ participantId: who.participantId, accountId: who.accountId, symbol, orderId, kind: "amend" }));
   }
 
   /** 403 once blocked; 429 (counted as a violation) when over the rate or open-order limit. */
@@ -219,8 +229,7 @@ export class OrderService {
 
   private async risk(request: Parameters<RiskClient["check"]>[0]) {
     try {
-      const decision = await this.deps.risk.check(request);
-      return decision.approved ? null : decision;
+      return await this.deps.risk.check(request);
     } catch (e) {
       if (e instanceof RiskUnavailable) {
         throw new ApiError(503, "RISK_UNAVAILABLE", e.message);
