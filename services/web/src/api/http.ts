@@ -366,18 +366,18 @@ export function toOrderResult(r: Json): OrderResult {
 
 /** One `trades_history` row from the caller's point of view (maker or taker). */
 export function toTradeRow(r: Json, participantId: number): TradeHistoryRow {
-  const aggressor = String(pick(r, "aggressor_side", "aggressorSide", "side") ?? "BUY") as TradeHistoryRow["side"];
-  const iAmTaker = num(pick(r, "taker_participant_id", "takerParticipantId")) === participantId;
+  const aggressor = String(pick(r, "aggressorSide", "side") ?? "BUY") as TradeHistoryRow["side"];
+  const iAmTaker = num(pick(r, "takerParticipantId")) === participantId;
   const symbol = String(r.symbol);
   return {
-    tradeId: String(pick(r, "id", "tradeId") ?? `${symbol}-${num(r.seq)}-${num(r.event_index)}`),
-    orderId: num(iAmTaker ? pick(r, "taker_order_id", "takerOrderId") : pick(r, "maker_order_id", "makerOrderId")),
+    tradeId: String(pick(r, "id", "tradeId") ?? `${symbol}-${num(r.seq)}-${num(r.eventIndex)}`),
+    orderId: num(iAmTaker ? pick(r, "takerOrderId") : pick(r, "makerOrderId")),
     symbol,
     side: iAmTaker ? aggressor : aggressor === "BUY" ? "SELL" : "BUY",
-    price: px(pick(r, "price_ticks", "priceTicks", "price")),
+    price: px(pick(r, "priceTicks", "price")),
     qty: num(r.qty),
     liquidity: iAmTaker ? "TAKER" : "MAKER",
-    time: time(pick(r, "event_time", "eventTime", "time")),
+    time: time(pick(r, "eventTime", "time")),
   };
 }
 
@@ -391,27 +391,27 @@ export function foldOrderHistory(rows: Json[], trades: TradeHistoryRow[]): Order
     f.notional += t.qty * t.price;
     fills.set(k, f);
   }
-  const ordered = [...rows].sort((a, b) => num(a.seq) - num(b.seq) || num(a.event_index) - num(b.event_index));
+  const ordered = [...rows].sort((a, b) => num(a.seq) - num(b.seq) || num(a.eventIndex) - num(b.eventIndex));
   const byOrder = new Map<string, OrderHistoryRow>();
   for (const r of ordered) {
-    const orderId = num(pick(r, "order_id", "orderId"));
+    const orderId = num(pick(r, "orderId"));
     const symbol = String(r.symbol);
     const k = `${symbol}:${orderId}`;
-    const at = time(pick(r, "event_time", "eventTime"));
-    const price = pxOrNull(pick(r, "price_ticks", "priceTicks"));
+    const at = time(pick(r, "eventTime"));
+    const price = pxOrNull(pick(r, "priceTicks"));
     let o = byOrder.get(k);
     if (!o) {
       o = {
         orderId, symbol,
         side: (r.side ?? "BUY") as OrderHistoryRow["side"],
-        type: (pick(r, "order_type", "orderType") ?? "LIMIT") as OrderHistoryRow["type"],
-        timeInForce: (pick(r, "time_in_force", "timeInForce") ?? "GTC") as OrderHistoryRow["timeInForce"],
+        type: (pick(r, "orderType") ?? "LIMIT") as OrderHistoryRow["type"],
+        timeInForce: (pick(r, "timeInForce") ?? "GTC") as OrderHistoryRow["timeInForce"],
         price: null, qty: 0, filledQty: 0, avgFillPrice: null, status: "NEW", createdAt: at, updatedAt: at,
       };
       byOrder.set(k, o);
     }
     o.updatedAt = at;
-    switch (pick(r, "event_type", "eventType")) {
+    switch (pick(r, "eventType")) {
       case "PLACED":
         o.price = price && price > 0 ? price : null;
         o.qty = num(r.qty);

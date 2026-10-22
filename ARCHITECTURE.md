@@ -510,7 +510,7 @@ flowchart LR
   (`OrderPlaced`/`TradeExecuted`/`OrderCancelled`, or `OrderRejected`/`RiskRejected` → rejected with the reason).
   `GET /api/portfolio` is the portfolio service's account body in integer cents, including `openOrders` (live
   reservations), polled every second and after each order call. `GET /api/history/orders|trades` return
-  `orders_history` / `trades_history` rows; order history folds the lifecycle rows per order and joins fills from the
+  `orders_history` / `trades_history` rows as camelCase JSON with integer-tick prices; order history folds the lifecycle rows per order and joins fills from the
   caller's trades (maker or taker side). Gateway errors are `{error, reason}`. Market data is one WebSocket per
   symbol at `/ws/marketdata/{symbol}` (integer ticks); on a sequence gap the client sends `{"type":"resync"}`, on a
   dropped socket it reconnects with backoff, and either way it waits for a fresh snapshot. A book that has never

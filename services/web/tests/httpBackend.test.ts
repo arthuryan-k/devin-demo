@@ -125,8 +125,8 @@ describe("HttpBackend against the Phase 5 gateway contract", () => {
 
 describe("history mapping (orders_history / trades_history rows)", () => {
   const trades = [
-    { id: 1, symbol: "ACME", seq: 3, event_index: 1, maker_order_id: 50, taker_order_id: 60, maker_participant_id: 1007, taker_participant_id: 1001, aggressor_side: "SELL", price_ticks: 10010, qty: 4, event_time: "2026-10-22T14:00:03Z" },
-    { id: 2, symbol: "ACME", seq: 4, event_index: 1, maker_order_id: 70, taker_order_id: 50, maker_participant_id: 1002, taker_participant_id: 1007, aggressor_side: "BUY", price_ticks: 10020, qty: 6, event_time: "2026-10-22T14:00:04Z" },
+    { id: 1, symbol: "ACME", seq: 3, eventIndex: 1, makerOrderId: 50, takerOrderId: 60, makerParticipantId: 1007, takerParticipantId: 1001, aggressorSide: "SELL", priceTicks: 10010, qty: 4, eventTime: "2026-10-22T14:00:03Z" },
+    { id: 2, symbol: "ACME", seq: 4, eventIndex: 1, makerOrderId: 70, takerOrderId: 50, makerParticipantId: 1002, takerParticipantId: 1007, aggressorSide: "BUY", priceTicks: 10020, qty: 6, eventTime: "2026-10-22T14:00:04Z" },
   ];
 
   it("maps trades from the caller's side as maker or taker", () => {
@@ -138,9 +138,9 @@ describe("history mapping (orders_history / trades_history rows)", () => {
   it("folds lifecycle rows into one row per order with fills from trades", () => {
     const rows = foldOrderHistory(
       [
-        { symbol: "ACME", seq: 4, event_index: 0, order_id: 50, event_type: "AMENDED", price_ticks: 10020, qty: 6, event_time: "2026-10-22T14:00:04Z" },
-        { symbol: "ACME", seq: 2, event_index: 0, order_id: 50, event_type: "PLACED", side: "BUY", order_type: "LIMIT", time_in_force: "GTC", price_ticks: 10010, qty: 10, event_time: "2026-10-22T14:00:02Z" },
-        { symbol: "ACME", seq: 5, event_index: 0, order_id: 51, event_type: "REJECTED", side: "SELL", qty: 5, reason: "NO_POSITION", event_time: "2026-10-22T14:00:05Z" },
+        { symbol: "ACME", seq: 4, eventIndex: 0, orderId: 50, eventType: "AMENDED", priceTicks: 10020, qty: 6, eventTime: "2026-10-22T14:00:04Z" },
+        { symbol: "ACME", seq: 2, eventIndex: 0, orderId: 50, eventType: "PLACED", side: "BUY", orderType: "LIMIT", timeInForce: "GTC", priceTicks: 10010, qty: 10, eventTime: "2026-10-22T14:00:02Z" },
+        { symbol: "ACME", seq: 5, eventIndex: 0, orderId: 51, eventType: "REJECTED", side: "SELL", qty: 5, reason: "NO_POSITION", eventTime: "2026-10-22T14:00:05Z" },
       ],
       trades.map((t) => toTradeRow(t, 1007)),
     );
