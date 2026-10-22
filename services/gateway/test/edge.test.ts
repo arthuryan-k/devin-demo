@@ -110,3 +110,26 @@ describe("portfolio BFF route", () => {
     expect((await app.inject({ method: "GET", url: "/api/portfolio", headers: { "x-api-key": "key-alice" } })).json()).toEqual({ accountId: ALICE.participantId });
   });
 });
+
+describe("history BFF routes", () => {
+  it("scopes history queries to the caller", async () => {
+    const seen: string[] = [];
+    const history = Fastify();
+    history.get("/v1/:kind", async (req) => {
+      seen.push(req.url);
+      return { [(req.params as { kind: string }).kind]: [] };
+    });
+    const url = await history.listen({ port: 0, host: "127.0.0.1" });
+    const h = await harness();
+    const app = await buildApp({ orders: h.orders, auth: h.auth, symbols: h.symbols, historyUrl: url });
+    cleanup.push(() => history.close(), () => app.close(), () => h.app.close());
+    expect((await app.inject({ method: "GET", url: "/api/history/orders" })).statusCode).toBe(401);
+    const res = await app.inject({ method: "GET", url: "/api/history/trades?symbol=ACME&limit=5&participantId=999", headers: { "x-api-key": "key-alice" } });
+    expect(res.json()).toEqual({ trades: [] });
+    await app.inject({ method: "GET", url: "/api/history/orders", headers: { "x-api-key": "key-alice" } });
+    expect(seen).toEqual([
+      `/v1/trades?symbol=ACME&limit=5&participantId=${ALICE.participantId}`,
+      `/v1/orders?participantId=${ALICE.participantId}`,
+    ]);
+  });
+});

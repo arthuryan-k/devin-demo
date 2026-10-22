@@ -15,6 +15,7 @@ export interface Config {
   referenceDataUrl?: string;
   marketDataUrl?: string;
   portfolioUrl?: string;
+  historyUrl?: string;
   upstreams: Record<string, string>;
   symbols?: string[];
   instance: number;
@@ -63,6 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     referenceDataUrl: env.REFERENCE_DATA_URL || undefined,
     marketDataUrl: env.MARKET_DATA_URL || undefined,
     portfolioUrl: env.PORTFOLIO_URL || undefined,
+    historyUrl: env.HISTORY_URL || undefined,
     upstreams: upstreams(env.UPSTREAMS),
     symbols: env.SYMBOLS ? env.SYMBOLS.split(",").map((s) => s.trim().toUpperCase()) : undefined,
     instance: num(env, "GATEWAY_INSTANCE", 0),

@@ -1,6 +1,6 @@
 import formbody from "@fastify/formbody";
 import httpProxy from "@fastify/http-proxy";
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
 import type { Authenticator, Principal } from "./auth.js";
 import { ApiError } from "./errors.js";
@@ -19,6 +19,8 @@ export interface AppDeps {
   marketDataUrl?: string;
   /** Portfolio service; {@code GET /api/portfolio} returns the caller's account from {@code /v1/accounts/{participantId}}. */
   portfolioUrl?: string;
+  /** History read API; {@code GET /api/history/{orders,trades}} forwards to {@code /v1/{orders,trades}?participantId=<caller>}. */
+  historyUrl?: string;
   /**
    * Authenticated forwarded routes: public prefix -> upstream URL. A path on the URL replaces the prefix
    * (no path keeps it; {@code http://reference-data:8082/} maps {@code /api/reference/x} to {@code /x}).
@@ -91,16 +93,26 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get("/api/me", { preHandler: authenticate }, async (request) => request.principal);
 
+  if (deps.historyUrl) {
+    const historyUrl = deps.historyUrl.replace(/\/$/, "");
+    for (const kind of ["orders", "trades"]) {
+      app.get(`/api/history/${kind}`, { preHandler: authenticate }, async (request, reply) => {
+        const query = new URLSearchParams();
+        for (const [k, v] of Object.entries(request.query as Record<string, unknown>)) {
+          if (k !== "participantId" && v !== undefined) {
+            query.set(k, String(v));
+          }
+        }
+        query.set("participantId", String(request.principal!.participantId));
+        return forward(reply, `${historyUrl}/v1/${kind}?${query}`, "HISTORY_UNAVAILABLE", "history");
+      });
+    }
+  }
+
   if (deps.portfolioUrl) {
     const portfolioUrl = deps.portfolioUrl.replace(/\/$/, "");
     app.get("/api/portfolio", { preHandler: authenticate }, async (request, reply) => {
-      let res: Response;
-      try {
-        res = await fetch(`${portfolioUrl}/v1/accounts/${request.principal!.participantId}`, { signal: AbortSignal.timeout(3_000) });
-      } catch (e) {
-        throw new ApiError(503, "PORTFOLIO_UNAVAILABLE", `portfolio service unreachable: ${(e as Error).message}`);
-      }
-      return reply.status(res.status).type("application/json").send(await res.text());
+      return forward(reply, `${portfolioUrl}/v1/accounts/${request.principal!.participantId}`, "PORTFOLIO_UNAVAILABLE", "portfolio");
     });
   }
 
@@ -183,4 +195,15 @@ async function resolvePrincipal(request: FastifyRequest, auth: Authenticator, se
     throw new ApiError(503, "AUTH_UNAVAILABLE", `auth service unavailable: ${(e as Error).message}`);
   }
   throw new ApiError(401, "MISSING_CREDENTIALS", "Authorization: Bearer <token> or X-Api-Key header is required");
+}
+
+/** GET {@code url} and relay its status and JSON body; 503 {@code reason} if the service is unreachable. */
+async function forward(reply: FastifyReply, url: string, reason: string, service: string) {
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
+  } catch (e) {
+    throw new ApiError(503, reason, `${service} service unreachable: ${(e as Error).message}`);
+  }
+  return reply.status(res.status).type("application/json").send(await res.text());
 }

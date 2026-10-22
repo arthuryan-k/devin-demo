@@ -59,6 +59,7 @@ async function main(): Promise<void> {
     authServiceUrl: config.authUrl,
     marketDataUrl: config.marketDataUrl,
     portfolioUrl: config.portfolioUrl,
+    historyUrl: config.historyUrl,
     upstreams: config.upstreams,
     logger: true,
   });

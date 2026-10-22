@@ -13,6 +13,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol 
 |---|---|
 | `services/` | One directory per deployable service; each builds on its own toolchain. |
 | `services/matching-engine/` | Java 17 / Maven: the exchange core (one matching engine, Disruptor pipeline and journal per symbol), participant HTTP API, market-data stream, market simulator and the TeaVM browser build. |
+| `services/gateway/` | TypeScript / Fastify: the single public API. It authenticates callers, rate-limits them, checks risk, places orders on the bus and returns the engine's result. Clients use decimal prices. See its [README](services/gateway/README.md). |
+| `services/market-data/` | Python / FastAPI: per-symbol WebSocket L2 feeds (snapshot, then ordered deltas, with resync on gaps). See its [README](services/market-data/README.md). |
 | `schemas/bus/` | JSON Schemas of the event-bus topics (`commands.<symbol>`, `events.<symbol>`, `marketdata.<symbol>`). |
 | `services/auth-service/` | TypeScript / Fastify: signup, login (JWT), API keys and participant accounts in Postgres. |
 | `services/reference-data-service/` | TypeScript / Fastify: the listed symbols and their trading parameters over REST. |
@@ -136,3 +138,17 @@ docker compose exec postgres psql -U brokerage -c 'select * from trades_history 
 
 To run the server on top of them, start it with `AUTH_SERVICE_URL=http://localhost:8081 REFDATA_URL=http://localhost:8082 mvn compile exec:java`.
 Service ownership and contracts are in [ARCHITECTURE.md](ARCHITECTURE.md#brokerage-services-and-postgres).
+
+### Through the gateway
+
+Clients reach the exchange through the gateway (`localhost:8080`). Sign up, then trade with decimal prices:
+
+```
+TOKEN=$(curl -s localhost:8080/api/auth/signup -H 'content-type: application/json' \
+  -d '{"username":"alice","password":"correct-horse"}' | jq -r .token)
+curl -s localhost:8080/api/orders -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"symbol":"ACME","side":"BUY","price":"10.25","qty":3}'
+# {"orderId":...,"symbol":"ACME","seq":0,"events":[{"type":"OrderPlaced","price":"10.25","qty":3,...}]}
+```
+
+To stream the book, open a WebSocket at `ws://localhost:8080/marketdata/ACME/ws`.
