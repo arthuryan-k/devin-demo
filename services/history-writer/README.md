@@ -47,7 +47,7 @@ else returns `400 {"error":"bad_request"}`.
 ```console
 $ curl -s 'localhost:8083/v1/trades?participantId=1002&symbol=ACME&limit=1'
 {"trades":[{"symbol":"ACME","seq":1,"eventIndex":1,"makerOrderId":1,"takerOrderId":17,"makerParticipantId":1001,
-  "takerParticipantId":1002,"aggressorSide":"BUY","priceTicks":10100,"qty":3,"eventTime":"2026-10-22T14:38:42.059Z"}]}
+  "takerParticipantId":1002,"side":"BUY","priceTicks":10100,"qty":3,"eventTime":"2026-10-22T14:38:42.059Z"}]}
 ```
 
 Order rows carry `symbol, seq, eventIndex, orderId, participantId, eventType` (`PLACED`/`AMENDED`/`CANCELLED`/`REJECTED`),
@@ -61,7 +61,7 @@ Order rows carry `symbol, seq, eventIndex, orderId, participantId, eventType` (`
 | `KAFKA_BROKERS` | `localhost:9092` | comma-separated |
 | `KAFKA_GROUP_ID` | `history-writer` | consumer group; offsets are committed after the rows |
 | `PORT` | `8083` | read API port |
-| `TOPIC_DISCOVERY_MS` | `10000` | how often to look for newly created `events.<symbol>` topics |
+| `TOPIC_DISCOVERY_MS` | `30000` | how often to look for newly created `events.<symbol>` topics |
 
 ## Build and run
 

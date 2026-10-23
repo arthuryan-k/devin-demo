@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
@@ -15,7 +16,13 @@ class FixGatewayTest {
     static final long ALICE = 101;
     static final long BOB = 202;
     static final long CAROL = 303;
-    static final Map<String, Long> KEYS = Map.of("key-alice", ALICE, "key-bob", BOB, "key-carol", CAROL);
+    static final Map<String, Long> KEYS = new HashMap<String, Long>();
+
+    static {
+        KEYS.put("key-alice", ALICE);
+        KEYS.put("key-bob", BOB);
+        KEYS.put("key-carol", CAROL);
+    }
 
     ToyEngine engine;
     FixServer server;

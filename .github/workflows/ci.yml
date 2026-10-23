@@ -54,7 +54,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [matching-engine, simulator, fix-gateway]
+        include:
+          - service: matching-engine
+            java: '17'
+          - service: simulator
+            java: '17'
+          - service: fix-gateway
+            java: '8'
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
@@ -63,7 +69,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ matrix.java }}
           cache: maven
           cache-dependency-path: services/${{ matrix.service }}/pom.xml
       - name: Checkstyle
@@ -88,7 +94,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [simulator, fix-gateway]
+        include:
+          - service: simulator
+            java: '17'
+          - service: fix-gateway
+            java: '8'
     defaults:
       run:
         working-directory: services/${{ matrix.service }}
@@ -97,7 +107,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ matrix.java }}
           cache: maven
           cache-dependency-path: services/${{ matrix.service }}/pom.xml
       - run: mvn -B verify
