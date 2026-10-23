@@ -13,20 +13,24 @@ DBURL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/brokerage}
 extract() {
     out=$1
     mkdir -p "$out" || return 8
-    psql "$DBURL" -X -q -v ON_ERROR_STOP=1 -At -F'|' -c \
-        "SELECT account_id, cash, reserved_cash, starting_cash FROM portfolio.accounts ORDER BY account_id" \
-        > "$out/accounts.dat" || return 8
-    psql "$DBURL" -X -q -v ON_ERROR_STOP=1 -At -F'|' -c \
-        "SELECT account_id, symbol, shares, reserved_shares, cost_basis, realized_pnl FROM portfolio.positions
-         ORDER BY account_id, symbol" > "$out/positions.dat" || return 8
-    psql "$DBURL" -X -q -v ON_ERROR_STOP=1 -At -F'|' -c \
-        "SELECT fill_id, account_id, symbol, order_id, side, price, qty FROM portfolio.fills ORDER BY fill_id" \
-        > "$out/fills.dat" || return 8
-    psql "$DBURL" -X -q -v ON_ERROR_STOP=1 -At -F'|' -c \
-        "SELECT symbol, seq, event_index, coalesce(maker_participant_id, 0), coalesce(taker_participant_id, 0),
-                price_ticks, qty FROM trades_history ORDER BY symbol, seq, event_index" > "$out/trades.dat" || return 8
-    psql "$DBURL" -X -q -v ON_ERROR_STOP=1 -At -F'|' -c \
-        "SELECT symbol, last_price FROM portfolio.marks ORDER BY symbol" > "$out/marks.dat" || return 8
+    # one REPEATABLE READ transaction so the ledger and the tape are a consistent snapshot
+    psql "$DBURL" -X -q -v ON_ERROR_STOP=1 -At -F'|' <<SQL || return 8
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+\o $out/accounts.dat
+SELECT account_id, cash, reserved_cash, starting_cash FROM portfolio.accounts ORDER BY account_id;
+\o $out/positions.dat
+SELECT account_id, symbol, shares, reserved_shares, cost_basis, realized_pnl FROM portfolio.positions
+ ORDER BY account_id, symbol;
+\o $out/fills.dat
+SELECT fill_id, account_id, symbol, order_id, side, price, qty FROM portfolio.fills ORDER BY fill_id;
+\o $out/trades.dat
+SELECT symbol, seq, event_index, coalesce(maker_participant_id, 0), coalesce(taker_participant_id, 0),
+       price_ticks, qty FROM trades_history ORDER BY symbol, seq, event_index;
+\o $out/marks.dat
+SELECT symbol, last_price FROM portfolio.marks ORDER BY symbol;
+\o
+COMMIT;
+SQL
     return 0
 }
 
