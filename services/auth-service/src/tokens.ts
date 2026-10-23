@@ -75,8 +75,13 @@ export class TokenIssuer {
     });
     const userId = Number(payload.sub);
     const { participantId, accountId, username, kind } = payload as Record<string, unknown>;
-    if (!Number.isSafeInteger(userId) || typeof participantId !== "number" || typeof accountId !== "number"
-        || typeof username !== "string" || (kind !== "human" && kind !== "simulated")) {
+    if (
+      !Number.isSafeInteger(userId) ||
+      typeof participantId !== "number" ||
+      typeof accountId !== "number" ||
+      typeof username !== "string" ||
+      (kind !== "human" && kind !== "simulated")
+    ) {
       throw new Error("malformed claims");
     }
     return { userId, participantId, accountId, username, kind };

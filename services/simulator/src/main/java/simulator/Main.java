@@ -16,6 +16,9 @@ public final class Main {
 
     private static final Logger LOG = Logger.getLogger(Main.class.getName());
 
+    private Main() {
+    }
+
     public static void main(String[] args) throws Exception {
         String gateway = env("GATEWAY_URL", "http://gateway:8080");
         List<MarketSimulator.SymbolSpec> symbols = parseSymbols(env("SYMBOLS",

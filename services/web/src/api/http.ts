@@ -189,7 +189,13 @@ export class HttpBackend implements Backend {
   }
 
   async placeOrder(order: OrderRequest): Promise<OrderResult> {
-    const body: Json = { symbol: order.symbol, side: order.side, type: order.type, qty: order.qty, timeInForce: order.timeInForce };
+    const body: Json = {
+      symbol: order.symbol,
+      side: order.side,
+      type: order.type,
+      qty: order.qty,
+      timeInForce: order.timeInForce,
+    };
     if (order.type === "LIMIT" && order.price != null) body.price = decimal(order.price);
     return this.orderCall("POST", "/api/orders", body);
   }
@@ -290,7 +296,8 @@ export function toPortfolio(p: Json): Portfolio {
     };
   });
   const realizedPnl = p.realizedPnl != null ? px(p.realizedPnl) : positions.reduce((s, x) => s + x.realizedPnl, 0);
-  const unrealizedPnl = p.unrealizedPnl != null ? px(p.unrealizedPnl) : positions.reduce((s, x) => s + x.unrealizedPnl, 0);
+  const unrealizedPnl =
+    p.unrealizedPnl != null ? px(p.unrealizedPnl) : positions.reduce((s, x) => s + x.unrealizedPnl, 0);
   return {
     cash: px(p.cash),
     reservedCash: px(p.reservedCash),
@@ -402,11 +409,18 @@ export function foldOrderHistory(rows: Json[], trades: TradeHistoryRow[]): Order
     let o = byOrder.get(k);
     if (!o) {
       o = {
-        orderId, symbol,
+        orderId,
+        symbol,
         side: (r.side ?? "BUY") as OrderHistoryRow["side"],
         type: (pick(r, "orderType") ?? "LIMIT") as OrderHistoryRow["type"],
         timeInForce: (pick(r, "timeInForce") ?? "GTC") as OrderHistoryRow["timeInForce"],
-        price: null, qty: 0, filledQty: 0, avgFillPrice: null, status: "NEW", createdAt: at, updatedAt: at,
+        price: null,
+        qty: 0,
+        filledQty: 0,
+        avgFillPrice: null,
+        status: "NEW",
+        createdAt: at,
+        updatedAt: at,
       };
       byOrder.set(k, o);
     }

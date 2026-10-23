@@ -15,9 +15,12 @@ class ReferenceDataClientTest {
 
     private static final String LISTING = """
             {"symbols":[
-              {"symbol":"ACME","name":"Acme Corporation","currency":"USD","tickSize":"0.01","lotSize":1,"initialCashGrant":"2500.00","active":true},
-              {"symbol":"OLD","name":"Delisted \\"Co\\"","currency":"USD","tickSize":"0.05","lotSize":10,"initialCashGrant":"0","active":false},
-              {"symbol":"NVTA","name":"Novata Therapeutics","currency":"USD","tickSize":"0.005","lotSize":100,"initialCashGrant":"1000.5","active":true}
+              {"symbol":"ACME","name":"Acme Corporation","currency":"USD","tickSize":"0.01","lotSize":1,
+               "initialCashGrant":"2500.00","active":true},
+              {"symbol":"OLD","name":"Delisted \\"Co\\"","currency":"USD","tickSize":"0.05","lotSize":10,
+               "initialCashGrant":"0","active":false},
+              {"symbol":"NVTA","name":"Novata Therapeutics","currency":"USD","tickSize":"0.005","lotSize":100,
+               "initialCashGrant":"1000.5","active":true}
             ]}""";
 
     @Test

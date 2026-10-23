@@ -45,11 +45,26 @@ describe.skipIf(!brokers)("over Kafka (Redpanda)", () => {
   });
 
   it("publishes to commands.<symbol> and correlates the events.<symbol> reply", async () => {
-    const ask = await app.inject({ method: "POST", url: "/api/orders", headers: asBob, payload: { symbol, side: "SELL", price: "10.10", qty: 4 } });
+    const ask = await app.inject({
+      method: "POST",
+      url: "/api/orders",
+      headers: asBob,
+      payload: { symbol, side: "SELL", price: "10.10", qty: 4 },
+    });
     expect(ask.statusCode).toBe(200);
     const [a, b] = await Promise.all([
-      app.inject({ method: "POST", url: "/api/orders", headers: asAlice, payload: { symbol, side: "BUY", price: "10.10", qty: 1 } }),
-      app.inject({ method: "POST", url: "/api/orders", headers: asAlice, payload: { symbol, side: "BUY", price: "9.00", qty: 2 } }),
+      app.inject({
+        method: "POST",
+        url: "/api/orders",
+        headers: asAlice,
+        payload: { symbol, side: "BUY", price: "10.10", qty: 1 },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/api/orders",
+        headers: asAlice,
+        payload: { symbol, side: "BUY", price: "9.00", qty: 2 },
+      }),
     ]);
     expect(ask.json().seq).toBe(1);
     expect(new Set([a.json().seq, b.json().seq])).toEqual(new Set([2, 3]));

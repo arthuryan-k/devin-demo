@@ -2,9 +2,10 @@
 
 Upstream (`marketdata.<symbol>`) carries the engine's feed: `snapshot` and `delta` messages with a per-symbol `seq`,
 integer-tick prices and the same shapes as the Java SSE feed. A feed applies deltas only when `seq` is exactly
-`last + 1`; a delta with seq 0 (the engine's first command) on an empty replica starts from an empty book. Anything else is an upstream gap: the
-feed asks its source to replay from the last snapshot (or the start of the log), applies the replay silently and,
-once it has caught up past the gap, sends every subscriber a fresh snapshot (`reason: "resync"`).
+`last + 1`; a delta with seq 0 (the engine's first command) on an empty replica starts from an empty book.
+Anything else is an upstream gap: the feed asks its source to replay from the last snapshot (or the start of the
+log), applies the replay silently and, once it has caught up past the gap, sends every subscriber a fresh snapshot
+(`reason: "resync"`).
 
 Downstream, each subscriber has a bounded queue. Its first message is a snapshot taken synchronously with
 registration on the event loop, so deltas after snapshot `S` are `S+1, S+2, ...` with no holes. A subscriber that
@@ -16,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from .prices import PriceFormat
 
@@ -41,20 +42,20 @@ class SymbolFeed:
         symbol: str,
         tick_size: str = "0.01",
         max_backlog: int = 1024,
-        replay: Optional[Callable[[str, int], None]] = None,
+        replay: Callable[[str, int], None] | None = None,
     ):
         self.symbol = symbol
         self.tick_size = tick_size
         self.max_backlog = max_backlog
         self.replay = replay
-        self.seq: Optional[int] = None
+        self.seq: int | None = None
         self.bids: dict[int, tuple[int, int]] = {}
         self.asks: dict[int, tuple[int, int]] = {}
         self.trades: deque[dict] = deque(maxlen=RECENT)
         self.events: deque[dict] = deque(maxlen=RECENT)
         self.subscribers: set[Subscriber] = set()
         self.snapshot_offset = 0
-        self.resync_target: Optional[int] = None
+        self.resync_target: int | None = None
         self.gaps = 0
 
     # ---- upstream ---------------------------------------------------------------------------------------------
@@ -93,17 +94,23 @@ class SymbolFeed:
             if self.seq is None:
                 return  # replay requested but not started yet: these records are redelivered by the replay
             # Still a hole after replaying the retained log: nothing older to rebuild from, wait for a snapshot.
-            log.error("%s: seq %d missing from the log (got %d); waiting for an upstream snapshot",
-                      self.symbol, expected, got)
+            log.error(
+                "%s: seq %d missing from the log (got %d); waiting for an upstream snapshot", self.symbol, expected, got
+            )
             return
-        log.warning("%s: upstream gap, expected seq %d got %d; replaying from offset %d",
-                    self.symbol, expected, got, self.snapshot_offset)
+        log.warning(
+            "%s: upstream gap, expected seq %d got %d; replaying from offset %d",
+            self.symbol,
+            expected,
+            got,
+            self.snapshot_offset,
+        )
         self.resync_target = got
         self._reset()
         if self.replay is not None:
             self.replay(self.symbol, self.snapshot_offset)
 
-    def _after_advance(self, reason: Optional[str], delta: Optional[dict] = None) -> None:
+    def _after_advance(self, reason: str | None, delta: dict | None = None) -> None:
         if self.resync_target is not None:
             if self.seq is not None and self.seq >= self.resync_target:
                 self.resync_target = None
@@ -163,7 +170,7 @@ class SymbolFeed:
     def subscribe(self, decimal: bool = True) -> Subscriber:
         sub = Subscriber(PriceFormat(self.tick_size, decimal), self.max_backlog)
         self.subscribers.add(sub)
-        if self.ready or self.seq is None and self.resync_target is None:
+        if self.ready or (self.seq is None and self.resync_target is None):
             self._offer(sub, self.snapshot(sub.fmt, "subscribe"))
         # Otherwise mid-resync: the "resync" snapshot is the first thing this subscriber gets.
         return sub

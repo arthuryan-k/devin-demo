@@ -1,7 +1,6 @@
-from starlette.websockets import WebSocketDisconnect
 import pytest
-
 from conftest import delta, snapshot
+from starlette.websockets import WebSocketDisconnect
 
 
 def test_snapshot_on_connect_then_ordered_deltas_in_decimals(exchange):
@@ -9,8 +8,14 @@ def test_snapshot_on_connect_then_ordered_deltas_in_decimals(exchange):
     with exchange.client.websocket_connect("/marketdata/ACME/ws") as ws:
         first = ws.receive_json()
         assert first == {
-            "type": "snapshot", "symbol": "ACME", "seq": 10, "reason": "subscribe",
-            "bids": [["100.50", 5, 1]], "asks": [["101.00", 3, 2]], "trades": [], "events": [],
+            "type": "snapshot",
+            "symbol": "ACME",
+            "seq": 10,
+            "reason": "subscribe",
+            "bids": [["100.50", 5, 1]],
+            "asks": [["101.00", 3, 2]],
+            "trades": [],
+            "events": [],
         }
         exchange.publish("ACME", delta(11, [("u", "B", 10050, 8, 2)]))
         trade = {"type": "TradeExecuted", "price": 10100, "qty": 3, "takerSide": "BUY"}
@@ -94,8 +99,10 @@ def test_symbols_are_isolated(exchange):
     exchange.publish("ACME", snapshot(0))  # the engine opens each run with a snapshot
     exchange.publish("ACME", delta(1, [("a", "B", 10000, 1, 1)]))
     exchange.publish("GLOBX", snapshot(500, asks=[(400, 10, 1)]))
-    with exchange.client.websocket_connect("/marketdata/ACME/ws") as acme, \
-            exchange.client.websocket_connect("/marketdata/GLOBX/ws") as globx:
+    with (
+        exchange.client.websocket_connect("/marketdata/ACME/ws") as acme,
+        exchange.client.websocket_connect("/marketdata/GLOBX/ws") as globx,
+    ):
         a0, g0 = acme.receive_json(), globx.receive_json()
         assert (a0["symbol"], a0["seq"]) == ("ACME", 1)
         # GLOBX has its own tick size (0.05) and sequence.

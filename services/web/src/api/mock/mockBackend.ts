@@ -10,7 +10,7 @@ import type {
   Session,
   TradeHistoryRow,
 } from "../types";
-import { Account, FakeExchange } from "./fakeExchange";
+import { type Account, FakeExchange } from "./fakeExchange";
 import { DEMO_USER, INSTRUMENTS } from "./fixtures";
 
 const USERS_KEY = "tws.mock.users";
@@ -73,7 +73,12 @@ export class MockBackend implements Backend {
   private open(username: string): Session {
     const ids = Object.keys(this.users()).sort();
     const participantId = 1000 + Math.max(1, ids.indexOf(username) + 1);
-    this.session = { token: `mock.${btoa(username)}`, username, participantId, accountId: `DU${(participantId * 7919) % 10_000_000}` };
+    this.session = {
+      token: `mock.${btoa(username)}`,
+      username,
+      participantId,
+      accountId: `DU${(participantId * 7919) % 10_000_000}`,
+    };
     this.storage?.setItem(SESSION_KEY, JSON.stringify(this.session));
     return this.session;
   }
@@ -95,7 +100,8 @@ export class MockBackend implements Backend {
   signup(username: string, password: string): Promise<Session> {
     return this.delay(() => {
       const u = username.trim().toLowerCase();
-      if (!/^[a-z0-9_.-]{3,32}$/.test(u)) throw new ApiError(400, "INVALID_USERNAME", "Username must be 3–32 letters, digits, . _ or -");
+      if (!/^[a-z0-9_.-]{3,32}$/.test(u))
+        throw new ApiError(400, "INVALID_USERNAME", "Username must be 3–32 letters, digits, . _ or -");
       if (password.length < 8) throw new ApiError(400, "WEAK_PASSWORD", "Password must be at least 8 characters");
       const users = this.users();
       if (users[u]) throw new ApiError(409, "USERNAME_TAKEN", "That username is already registered");
@@ -133,11 +139,14 @@ export class MockBackend implements Backend {
     let closed = false;
     handlers.onStatus("connecting");
     const send = (reason: "connect" | "resync") =>
-      setTimeout(() => {
-        if (closed) return;
-        handlers.onStatus("live");
-        handlers.onMessage(m.snapshot(reason));
-      }, Math.min(this.latencyMs, 30));
+      setTimeout(
+        () => {
+          if (closed) return;
+          handlers.onStatus("live");
+          handlers.onMessage(m.snapshot(reason));
+        },
+        Math.min(this.latencyMs, 30),
+      );
     const listener = (msg: Parameters<MarketFeedHandlers["onMessage"]>[0]) => !closed && handlers.onMessage(msg);
     m.listeners.add(listener);
     send("connect");

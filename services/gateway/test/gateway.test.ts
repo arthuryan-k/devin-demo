@@ -37,7 +37,10 @@ describe("authentication", () => {
 
   it("accepts a bearer session token", async () => {
     h = await harness();
-    const res = await place({ authorization: "Bearer jwt-alice" }, { symbol: "ACME", side: "BUY", price: "10", qty: 1 });
+    const res = await place(
+      { authorization: "Bearer jwt-alice" },
+      { symbol: "ACME", side: "BUY", price: "10", qty: 1 },
+    );
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(h.bus.records("commands.ACME")[0]!.value).participantId).toBe(1001);
   });
@@ -69,7 +72,9 @@ describe("admission control", () => {
     const capped = await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 });
     expect(capped.statusCode).toBe(429);
     expect(capped.json().reason).toBe("MAX_OPEN_ORDERS");
-    expect((await h.app.inject({ method: "DELETE", url: `/api/orders/${ids[0]}`, headers: asAlice })).statusCode).toBe(200);
+    expect((await h.app.inject({ method: "DELETE", url: `/api/orders/${ids[0]}`, headers: asAlice })).statusCode).toBe(
+      200,
+    );
     expect((await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 })).statusCode).toBe(200);
   });
 
@@ -82,7 +87,9 @@ describe("admission control", () => {
     const blocked = await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 });
     expect(blocked.statusCode).toBe(403);
     expect(blocked.json().reason).toBe("BLOCKED");
-    expect((await h.app.inject({ method: "DELETE", url: "/api/orders/1?symbol=ACME", headers: asAlice })).statusCode).toBe(403);
+    expect(
+      (await h.app.inject({ method: "DELETE", url: "/api/orders/1?symbol=ACME", headers: asAlice })).statusCode,
+    ).toBe(403);
     expect((await place(asBob, { symbol: "ACME", side: "BUY", price: "1", qty: 1 })).statusCode).toBe(200);
   });
 });
@@ -96,17 +103,34 @@ describe("synchronous risk", () => {
     const body = res.json();
     expect(body.seq).toBeUndefined();
     expect(body.events).toEqual([
-      expect.objectContaining({ type: "RiskRejected", reason: "INSUFFICIENT_FUNDS", message: "needs 1000.00, has 10.00" }),
+      expect.objectContaining({
+        type: "RiskRejected",
+        reason: "INSUFFICIENT_FUNDS",
+        message: "needs 1000.00, has 10.00",
+      }),
     ]);
     expect(h.bus.records("commands.ACME")).toHaveLength(0);
-    expect(h.risk.checks[0]).toMatchObject({ action: "PLACE", participantId: 1001, symbol: "ACME", side: "BUY", price: 10000, qty: 10 });
+    expect(h.risk.checks[0]).toMatchObject({
+      action: "PLACE",
+      participantId: 1001,
+      symbol: "ACME",
+      side: "BUY",
+      price: 10000,
+      qty: 10,
+    });
   });
 
   it("checks amends with the new price and qty in ticks", async () => {
     h = await harness();
     const id = (await place(asAlice, { symbol: "ACME", side: "BUY", price: "10.00", qty: 5 })).json().orderId;
-    h.risk.decide = (r) => (r.action === "AMEND" ? { approved: false, reason: "INSUFFICIENT_FUNDS", message: "no" } : { approved: true });
-    const res = await h.app.inject({ method: "PATCH", url: `/api/orders/${id}`, headers: asAlice, payload: { price: "12.50", qty: 9 } });
+    h.risk.decide = (r) =>
+      r.action === "AMEND" ? { approved: false, reason: "INSUFFICIENT_FUNDS", message: "no" } : { approved: true };
+    const res = await h.app.inject({
+      method: "PATCH",
+      url: `/api/orders/${id}`,
+      headers: asAlice,
+      payload: { price: "12.50", qty: 9 },
+    });
     expect(res.json().events[0].type).toBe("RiskRejected");
     expect(h.risk.checks[1]).toMatchObject({ action: "AMEND", orderId: id, price: 1250, qty: 9 });
     expect(h.bus.records("commands.ACME")).toHaveLength(1);
@@ -130,7 +154,9 @@ describe("synchronous risk", () => {
     const res = await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 });
     expect(res.statusCode).toBe(503);
     expect(res.json().reason).toBe("BUS_UNAVAILABLE");
-    expect(h.risk.releases).toEqual([expect.objectContaining({ orderId: res.json().orderId ?? h.risk.checks[0]!.orderId })]);
+    expect(h.risk.releases).toEqual([
+      expect.objectContaining({ orderId: res.json().orderId ?? h.risk.checks[0]!.orderId }),
+    ]);
   });
 });
 
@@ -141,7 +167,11 @@ describe("risk contract details", () => {
     h.risk.decide = (r) => (r.orderType === "MARKET" ? { approved: true, limitPrice: 1050 } : { approved: true });
     const res = await place(asAlice, { symbol: "ACME", side: "BUY", type: "MARKET", qty: 2 });
     expect(h.risk.checks[1]).toMatchObject({ action: "PLACE", orderType: "MARKET", price: null, qty: 2 });
-    expect(JSON.parse(h.bus.records("commands.ACME")[1]!.value)).toMatchObject({ orderType: "LIMIT", timeInForce: "IOC", price: 1050 });
+    expect(JSON.parse(h.bus.records("commands.ACME")[1]!.value)).toMatchObject({
+      orderType: "LIMIT",
+      timeInForce: "IOC",
+      price: 1050,
+    });
     expect(res.json().events).toEqual([
       expect.objectContaining({ type: "OrderPlaced", price: "10.50" }),
       expect.objectContaining({ type: "TradeExecuted", price: "10.00", qty: 2 }),
@@ -151,7 +181,10 @@ describe("risk contract details", () => {
   it("asks risk to confirm cancels and surfaces its rejection", async () => {
     h = await harness();
     const id = (await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 })).json().orderId;
-    h.risk.decide = (r) => (r.action === "CANCEL" ? { approved: false, reason: "NOT_OWN_OPEN_ORDER", message: "not yours" } : { approved: true });
+    h.risk.decide = (r) =>
+      r.action === "CANCEL"
+        ? { approved: false, reason: "NOT_OWN_OPEN_ORDER", message: "not yours" }
+        : { approved: true };
     const res = await h.app.inject({ method: "DELETE", url: `/api/orders/${id}`, headers: asAlice });
     expect(res.json().events[0]).toMatchObject({ type: "RiskRejected", reason: "NOT_OWN_OPEN_ORDER" });
     expect(h.risk.checks[1]).toMatchObject({ action: "CANCEL", orderId: id, symbol: "ACME" });
@@ -162,7 +195,12 @@ describe("risk contract details", () => {
     h = await harness();
     const id = (await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 })).json().orderId;
     h.bus.failNextPublish = new Error("broker down");
-    const res = await h.app.inject({ method: "PATCH", url: `/api/orders/${id}`, headers: asAlice, payload: { qty: 5 } });
+    const res = await h.app.inject({
+      method: "PATCH",
+      url: `/api/orders/${id}`,
+      headers: asAlice,
+      payload: { qty: 5 },
+    });
     expect(res.statusCode).toBe(503);
     expect(h.risk.releases).toEqual([expect.objectContaining({ orderId: id, kind: "amend" })]);
   });
@@ -186,7 +224,13 @@ describe("command -> event correlation", () => {
     expect(body.symbol).toBe("ACME");
     expect(body.events).toEqual([
       expect.objectContaining({ type: "OrderPlaced", orderId: body.orderId, price: "100.50", qty: 3 }),
-      expect.objectContaining({ type: "TradeExecuted", price: "100.25", qty: 3, makerOrderId: ask.json().orderId, takerOrderId: body.orderId }),
+      expect.objectContaining({
+        type: "TradeExecuted",
+        price: "100.25",
+        qty: 3,
+        makerOrderId: ask.json().orderId,
+        takerOrderId: body.orderId,
+      }),
     ]);
     // On the bus the engine only ever sees integer ticks.
     expect(JSON.parse(h.bus.records("commands.ACME")[1]!.value)).toMatchObject({ type: "Place", price: 10050, qty: 3 });
@@ -214,7 +258,11 @@ describe("command -> event correlation", () => {
 
   it("ignores event records for commands it did not send", async () => {
     h = await harness();
-    await h.bus.publish("events.ACME", "ACME", JSON.stringify({ seq: 99, symbol: "ACME", correlationId: "someone-else", participantId: 7, events: [] }));
+    await h.bus.publish(
+      "events.ACME",
+      "ACME",
+      JSON.stringify({ seq: 99, symbol: "ACME", correlationId: "someone-else", participantId: 7, events: [] }),
+    );
     const res = await place(asAlice, { symbol: "ACME", side: "BUY", price: "1", qty: 1 });
     expect(res.json().seq).toBe(1);
   });
@@ -233,10 +281,23 @@ describe("orders REST shape", () => {
   it("cancels and amends by id, routed to the order's symbol", async () => {
     h = await harness();
     const id = (await place(asAlice, { symbol: "NVTA", side: "SELL", price: "5.00", qty: 4 })).json().orderId;
-    const amend = await h.app.inject({ method: "PATCH", url: `/api/orders/${id}`, headers: asAlice, payload: { qty: 2 } });
-    expect(amend.json()).toMatchObject({ symbol: "NVTA", events: [{ type: "OrderAmended", oldQty: 4, newQty: 2, oldPrice: "5.00", newPrice: "5.00", priorityRetained: true }] });
+    const amend = await h.app.inject({
+      method: "PATCH",
+      url: `/api/orders/${id}`,
+      headers: asAlice,
+      payload: { qty: 2 },
+    });
+    expect(amend.json()).toMatchObject({
+      symbol: "NVTA",
+      events: [
+        { type: "OrderAmended", oldQty: 4, newQty: 2, oldPrice: "5.00", newPrice: "5.00", priorityRetained: true },
+      ],
+    });
     const cancel = await h.app.inject({ method: "DELETE", url: `/api/orders/${id}`, headers: asAlice });
-    expect(cancel.json()).toMatchObject({ symbol: "NVTA", events: [{ type: "OrderCancelled", orderId: id, cancelledQty: 2 }] });
+    expect(cancel.json()).toMatchObject({
+      symbol: "NVTA",
+      events: [{ type: "OrderCancelled", orderId: id, cancelledQty: 2 }],
+    });
     expect(h.bus.records("commands.NVTA").map((r) => JSON.parse(r.value).type)).toEqual(["Place", "Amend", "Cancel"]);
   });
 
@@ -249,7 +310,13 @@ describe("orders REST shape", () => {
       payload: "symbol=acme&side=buy&type=limit&price=12.34&qty=7&timeInForce=ioc",
     });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(h.bus.records("commands.ACME")[0]!.value)).toMatchObject({ side: "BUY", orderType: "LIMIT", timeInForce: "IOC", price: 1234, qty: 7 });
+    expect(JSON.parse(h.bus.records("commands.ACME")[0]!.value)).toMatchObject({
+      side: "BUY",
+      orderType: "LIMIT",
+      timeInForce: "IOC",
+      price: 1234,
+      qty: 7,
+    });
   });
 
   it("rejects touching another participant's order without publishing", async () => {
@@ -276,7 +343,9 @@ describe("orders REST shape", () => {
       expect(res.statusCode, JSON.stringify(body)).toBe(400);
       expect(res.json().error).toContain(message);
     }
-    expect((await h.app.inject({ method: "DELETE", url: "/api/orders/424242", headers: asAlice })).statusCode).toBe(404);
+    expect((await h.app.inject({ method: "DELETE", url: "/api/orders/424242", headers: asAlice })).statusCode).toBe(
+      404,
+    );
     expect(h.risk.checks).toHaveLength(0);
   });
 

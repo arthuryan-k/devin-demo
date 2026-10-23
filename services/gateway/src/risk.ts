@@ -18,7 +18,9 @@ export interface RiskRequest {
  * {@code limitPrice} (ticks) is risk's protection price for a MARKET order: the most the order may pay (buy) or least
  * it may receive (sell) given what was reserved. The gateway then sends it to the engine as a LIMIT IOC/FOK.
  */
-export type RiskDecision = { approved: true; limitPrice?: number } | { approved: false; reason: string; message: string };
+export type RiskDecision =
+  | { approved: true; limitPrice?: number }
+  | { approved: false; reason: string; message: string };
 
 /** The synchronous risk service: reserves cash/shares before the order reaches the engine. */
 export interface RiskClient {
@@ -47,7 +49,12 @@ export class HttpRiskClient implements RiskClient {
 
   async check(request: RiskRequest): Promise<RiskDecision> {
     const { action, price, qty, ...rest } = request;
-    const key = { participantId: rest.participantId, accountId: rest.accountId, symbol: rest.symbol, orderId: rest.orderId };
+    const key = {
+      participantId: rest.participantId,
+      accountId: rest.accountId,
+      symbol: rest.symbol,
+      orderId: rest.orderId,
+    };
     const res =
       action === "AMEND"
         ? await this.post("/v1/orders/check-amend", { ...key, newPrice: price, newQty: qty })

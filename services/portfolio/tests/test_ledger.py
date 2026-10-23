@@ -1,3 +1,4 @@
+import psycopg
 import pytest
 
 from portfolio import ledger
@@ -24,8 +25,10 @@ def test_buy_acme_locks_cash_and_sell_globx_locks_shares(pool):
     assert (v["cash"], v["reservedCash"], v["availableCash"]) == (100_000, 10_000, 90_000)
     globx = position(pool, ALICE, "GLOBX")
     assert (globx["shares"], globx["reservedShares"], globx["availableShares"]) == (50, 20, 30)
-    assert {(o["symbol"], o["orderId"], o["status"]) for o in v["openOrders"]} == {("ACME", 1, "PENDING"),
-                                                                                  ("GLOBX", 1, "PENDING")}
+    assert {(o["symbol"], o["orderId"], o["status"]) for o in v["openOrders"]} == {
+        ("ACME", 1, "PENDING"),
+        ("GLOBX", 1, "PENDING"),
+    }
 
 
 def test_rejects_insufficient_funds_and_leaves_state_untouched(pool):
@@ -267,13 +270,15 @@ def test_orders_that_skipped_risk_only_move_the_mark(pool):
     settle(pool, "ACME", Placed(500), Trade(500, 501, 1_234, 5), Cancelled(500, 1))
     assert view(pool, ALICE)["cash"] == 100_000
     with transaction(pool) as conn:
-        assert conn.execute("SELECT last_price FROM portfolio.marks WHERE symbol = 'ACME'").fetchone()[
-            "last_price"] == 1_234
+        assert (
+            conn.execute("SELECT last_price FROM portfolio.marks WHERE symbol = 'ACME'").fetchone()["last_price"]
+            == 1_234
+        )
 
 
 def test_db_constraints_reject_negative_balances(pool):
     open_account(pool, ALICE, 100)
-    with pytest.raises(Exception), transaction(pool) as conn:
+    with pytest.raises(psycopg.errors.CheckViolation), transaction(pool) as conn:
         conn.execute("UPDATE portfolio.accounts SET cash = -1 WHERE account_id = 1")
-    with pytest.raises(Exception), transaction(pool) as conn:
+    with pytest.raises(psycopg.errors.CheckViolation), transaction(pool) as conn:
         conn.execute("UPDATE portfolio.accounts SET reserved_cash = 101 WHERE account_id = 1")

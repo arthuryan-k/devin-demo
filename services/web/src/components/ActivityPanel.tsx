@@ -102,10 +102,28 @@ function LiveOrderRow({ order: o }: { order: OpenOrder }) {
       <td className="l">{o.type === "LIMIT" ? "LMT" : "MKT"}</td>
       <td className="l">{o.timeInForce}</td>
       <td className="num">
-        {editing ? <input className="cell-input" aria-label="New price" value={price} onChange={(e) => setPrice(e.target.value)} /> : fmtPrice(o.price)}
+        {editing ? (
+          <input
+            className="cell-input"
+            aria-label="New price"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+          />
+        ) : (
+          fmtPrice(o.price)
+        )}
       </td>
       <td className="num">
-        {editing ? <input className="cell-input" aria-label="New quantity" value={qty} onChange={(e) => setQty(e.target.value)} /> : fmtQty(o.qty)}
+        {editing ? (
+          <input
+            className="cell-input"
+            aria-label="New quantity"
+            value={qty}
+            onChange={(e) => setQty(e.target.value)}
+          />
+        ) : (
+          fmtQty(o.qty)
+        )}
       </td>
       <td className="num">{fmtQty(o.filledQty)}</td>
       <td className="num dim">{o.reservedCash ? fmtMoney(o.reservedCash) : ""}</td>
@@ -125,7 +143,11 @@ function LiveOrderRow({ order: o }: { order: OpenOrder }) {
             <button className="btn-xs" disabled={busy} onClick={() => setEditing(true)}>
               Modify
             </button>
-            <button className="btn-xs danger" disabled={busy} onClick={() => void run("cancel", () => ws.backend.cancelOrder(o.id))}>
+            <button
+              className="btn-xs danger"
+              disabled={busy}
+              onClick={() => void run("cancel", () => ws.backend.cancelOrder(o.id))}
+            >
               Cancel
             </button>
           </>
@@ -136,7 +158,10 @@ function LiveOrderRow({ order: o }: { order: OpenOrder }) {
 }
 
 /** Re-queries the history tables whenever the account changes (fills, cancels), at most every 1.5s. */
-function useHistory<T>(load: () => Promise<T[]>, account: AccountView | null): { rows: T[] | null; error: string | null } {
+function useHistory<T>(
+  load: () => Promise<T[]>,
+  account: AccountView | null,
+): { rows: T[] | null; error: string | null } {
   const [rows, setRows] = useState<T[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);

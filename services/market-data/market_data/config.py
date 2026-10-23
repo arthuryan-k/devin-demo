@@ -30,7 +30,7 @@ def parse_symbols(raw: str) -> list[tuple[str, str]]:
 
 
 def fetch_instruments(url: str) -> list[tuple[str, str]]:
-    with urllib.request.urlopen(url, timeout=5) as res:  # noqa: S310 - internal URL from config
+    with urllib.request.urlopen(url, timeout=5) as res:
         body = json.load(res)
     items = body if isinstance(body, list) else body.get("symbols", [])
     return [(str(i["symbol"]).upper(), str(i.get("tickSize", i.get("tick_size", "0.01")))) for i in items]

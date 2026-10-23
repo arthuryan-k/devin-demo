@@ -83,12 +83,15 @@ export class Store {
    * Creates a user and its one account in a single transaction. The account is granted the sum of
    * `reference_data.initial_cash_grant` over active symbols. `label` receives the allocated participant id.
    */
-  async createAccount(input: {
-    username: (participantId: number) => string;
-    passwordHash: string | null;
-    kind: UserKind;
-    label: (participantId: number) => string;
-  }, tx?: PoolClient): Promise<AccountRecord> {
+  async createAccount(
+    input: {
+      username: (participantId: number) => string;
+      passwordHash: string | null;
+      kind: UserKind;
+      label: (participantId: number) => string;
+    },
+    tx?: PoolClient,
+  ): Promise<AccountRecord> {
     const run = async (client: PoolClient) => {
       const pid = Number((await client.query("SELECT nextval('participant_id_seq') AS id")).rows[0].id);
       const username = input.username(pid);
@@ -133,8 +136,13 @@ export class Store {
     return row ? { ...toAccount(row), passwordHash: row.password_hash ?? null } : null;
   }
 
-  async insertApiKey(accountId: number, hash: Buffer, prefix: string, label: string | null,
-      client: Pool | PoolClient = this.pool): Promise<ApiKeyRecord> {
+  async insertApiKey(
+    accountId: number,
+    hash: Buffer,
+    prefix: string,
+    label: string | null,
+    client: Pool | PoolClient = this.pool,
+  ): Promise<ApiKeyRecord> {
     const res = await client.query(
       `INSERT INTO api_keys (account_id, key_hash, key_prefix, label) VALUES ($1, $2, $3, $4)
        RETURNING id, key_prefix, label, created_at, last_used_at, revoked_at`,

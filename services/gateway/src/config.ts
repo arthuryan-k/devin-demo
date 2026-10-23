@@ -38,7 +38,10 @@ function num(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
 /** Comma-separated {@code /api/portfolio=http://portfolio:8000,...} into a prefix -> upstream map. */
 function upstreams(text: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const entry of (text ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+  for (const entry of (text ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)) {
     const [prefix, url] = entry.split("=");
     if (!prefix || !url) {
       throw new Error(`bad UPSTREAMS entry ${entry}`);

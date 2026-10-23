@@ -92,7 +92,8 @@ public final class SnapshotCodec {
             if (r.size() != 2) {
                 throw new IllegalArgumentException("bad acceptedIds range " + r);
             }
-            long lo = number(r.get(0)), hi = number(r.get(1));
+            long lo = number(r.get(0));
+            long hi = number(r.get(1));
             if (hi < lo || (!ids.isEmpty() && lo <= ids.get(ids.size() - 1))) {
                 throw new IllegalArgumentException("acceptedIds ranges must be sorted and disjoint: " + r);
             }

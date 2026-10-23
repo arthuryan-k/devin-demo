@@ -2,8 +2,8 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 
 import { hashApiKey, keyPrefix, newApiKey } from "./apiKeys.js";
 import type { Config } from "./config.js";
-import { MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH, Passwords } from "./passwords.js";
-import { type AccountRecord, isUniqueViolation, Store } from "./store.js";
+import { MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH, type Passwords } from "./passwords.js";
+import { type AccountRecord, isUniqueViolation, type Store } from "./store.js";
 import type { SessionClaims, TokenIssuer } from "./tokens.js";
 
 declare module "fastify" {
@@ -20,7 +20,11 @@ export interface Deps {
 }
 
 class HttpError extends Error {
-  constructor(readonly statusCode: number, readonly code: string, message: string) {
+  constructor(
+    readonly statusCode: number,
+    readonly code: string,
+    message: string,
+  ) {
     super(message);
   }
 }
@@ -31,7 +35,9 @@ const MAX_NAME_LENGTH = 24;
 
 /** Same rules as the old in-process registry: letters, digits, `_` and `.`, at most 24; defaults to `P`. */
 export function sanitizeParticipantName(name: unknown): string {
-  const cleaned = (typeof name === "string" ? name.trim() : "").replace(/[^A-Za-z0-9_.]/g, "").slice(0, MAX_NAME_LENGTH);
+  const cleaned = (typeof name === "string" ? name.trim() : "")
+    .replace(/[^A-Za-z0-9_.]/g, "")
+    .slice(0, MAX_NAME_LENGTH);
   return cleaned === "" || /^(you|anon)$/i.test(cleaned) ? "P" : cleaned;
 }
 
@@ -43,7 +49,13 @@ function accountJson(a: AccountRecord) {
 }
 
 function claimsOf(a: AccountRecord): SessionClaims {
-  return { userId: a.userId, accountId: a.accountId, participantId: a.participantId, username: a.username, kind: a.kind };
+  return {
+    userId: a.userId,
+    accountId: a.accountId,
+    participantId: a.participantId,
+    username: a.username,
+    kind: a.kind,
+  };
 }
 
 function cookieValue(header: string | undefined, name: string): string | undefined {
@@ -89,16 +101,26 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
 
   async function startSession(reply: FastifyReply, account: AccountRecord, status: number) {
     const token = await tokens.issue(claimsOf(account));
-    const cookie = [`${config.cookieName}=${token}`, "Path=/", "HttpOnly", "SameSite=Lax",
-      `Max-Age=${tokens.ttlSeconds}`, ...(config.cookieSecure ? ["Secure"] : [])].join("; ");
+    const cookie = [
+      `${config.cookieName}=${token}`,
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Lax",
+      `Max-Age=${tokens.ttlSeconds}`,
+      ...(config.cookieSecure ? ["Secure"] : []),
+    ].join("; ");
     reply.header("Set-Cookie", cookie);
-    return reply.status(status).send({ token, tokenType: "Bearer", expiresIn: tokens.ttlSeconds, ...accountJson(account) });
+    return reply
+      .status(status)
+      .send({ token, tokenType: "Bearer", expiresIn: tokens.ttlSeconds, ...accountJson(account) });
   }
 
   /** Bearer token, else the session cookie. */
   async function requireSession(req: FastifyRequest) {
     const auth = req.headers.authorization;
-    const token = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : cookieValue(req.headers.cookie, config.cookieName);
+    const token = auth?.startsWith("Bearer ")
+      ? auth.slice(7).trim()
+      : cookieValue(req.headers.cookie, config.cookieName);
     if (!token) {
       throw unauthorized();
     }
@@ -121,7 +143,9 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
     return tokens.jwks;
   });
 
-  app.post<{ Body: { username: string; password: string } }>("/auth/signup", { schema: { body: credentialsSchema } },
+  app.post<{ Body: { username: string; password: string } }>(
+    "/auth/signup",
+    { schema: { body: credentialsSchema } },
     async (req, reply) => {
       const username = req.body.username.trim();
       const { password } = req.body;
@@ -129,13 +153,21 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
         throw new HttpError(400, "bad_request", "username must be 3-32 letters, digits, '_', '.' or '-'");
       }
       if (password.length < MIN_PASSWORD_LENGTH || Buffer.byteLength(password, "utf8") > MAX_PASSWORD_BYTES) {
-        throw new HttpError(400, "bad_request",
-          `password must be at least ${MIN_PASSWORD_LENGTH} characters and at most ${MAX_PASSWORD_BYTES} bytes`);
+        throw new HttpError(
+          400,
+          "bad_request",
+          `password must be at least ${MIN_PASSWORD_LENGTH} characters and at most ${MAX_PASSWORD_BYTES} bytes`,
+        );
       }
       const passwordHash = await passwords.hash(password);
       let account: AccountRecord;
       try {
-        account = await store.createAccount({ username: () => username, label: () => username, passwordHash, kind: "human" });
+        account = await store.createAccount({
+          username: () => username,
+          label: () => username,
+          passwordHash,
+          kind: "human",
+        });
       } catch (err) {
         if (isUniqueViolation(err)) {
           throw new HttpError(409, "username_taken", "username is already registered");
@@ -143,9 +175,12 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
         throw err;
       }
       return startSession(reply, account, 201);
-    });
+    },
+  );
 
-  app.post<{ Body: { username: string; password: string } }>("/auth/login", { schema: { body: credentialsSchema } },
+  app.post<{ Body: { username: string; password: string } }>(
+    "/auth/login",
+    { schema: { body: credentialsSchema } },
     async (req, reply) => {
       const login = await store.loginByUsername(req.body.username.trim());
       const ok = await passwords.verify(req.body.password, login?.passwordHash);
@@ -153,7 +188,8 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
         throw unauthorized("invalid username or password");
       }
       return startSession(reply, login, 200);
-    });
+    },
+  );
 
   app.post("/auth/logout", async (_req, reply) => {
     reply.header("Set-Cookie", `${config.cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
@@ -168,12 +204,16 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
     return accountJson(account);
   });
 
-  app.post<{ Body: { label?: string } | undefined }>("/api-keys", { preHandler: requireSession }, async (req, reply) => {
-    const label = typeof req.body?.label === "string" ? req.body.label.slice(0, 64) : null;
-    const key = newApiKey();
-    const record = await store.insertApiKey(req.session!.accountId, hashApiKey(key), keyPrefix(key), label);
-    return reply.status(201).send({ apiKey: key, participantId: req.session!.participantId, ...record });
-  });
+  app.post<{ Body: { label?: string } | undefined }>(
+    "/api-keys",
+    { preHandler: requireSession },
+    async (req, reply) => {
+      const label = typeof req.body?.label === "string" ? req.body.label.slice(0, 64) : null;
+      const key = newApiKey();
+      const record = await store.insertApiKey(req.session!.accountId, hashApiKey(key), keyPrefix(key), label);
+      return reply.status(201).send({ apiKey: key, participantId: req.session!.participantId, ...record });
+    },
+  );
 
   app.get("/api-keys", { preHandler: requireSession }, async (req) => ({
     keys: await store.listApiKeys(req.session!.accountId),
@@ -194,15 +234,25 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
     for (let attempt = 0; ; attempt++) {
       try {
         const account = await store.transaction(async (client) => {
-          const created = await store.createAccount({
-            username: (pid) => `${name}-${pid}`, label: (pid) => `${name}-${pid}`, passwordHash: null, kind: "simulated",
-          }, client);
+          const created = await store.createAccount(
+            {
+              username: (pid) => `${name}-${pid}`,
+              label: (pid) => `${name}-${pid}`,
+              passwordHash: null,
+              kind: "simulated",
+            },
+            client,
+          );
           await store.insertApiKey(created.accountId, hashApiKey(key), keyPrefix(key), "registration", client);
           return created;
         });
         return reply.status(201).send({
-          participantId: account.participantId, label: account.label, apiKey: key,
-          accountId: account.accountId, userId: account.userId, startingCash: account.startingCash,
+          participantId: account.participantId,
+          label: account.label,
+          apiKey: key,
+          accountId: account.accountId,
+          userId: account.userId,
+          startingCash: account.startingCash,
         });
       } catch (err) {
         if (!isUniqueViolation(err) || attempt >= 4) {
@@ -224,21 +274,28 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
     return { keyId: principal.keyId, ...principalJson(principal) };
   });
 
-  app.get<{ Params: { participantId: string } }>("/internal/participants/:participantId",
-    { preHandler: requireInternal }, async (req) => {
+  app.get<{ Params: { participantId: string } }>(
+    "/internal/participants/:participantId",
+    { preHandler: requireInternal },
+    async (req) => {
       const account = await store.accountByParticipantId(Number(req.params.participantId));
       if (!account) {
         throw new HttpError(404, "not_found", "unknown participant");
       }
       return principalJson(account);
-    });
+    },
+  );
 
   return app;
 }
 
 function principalJson(a: AccountRecord) {
   return {
-    participantId: a.participantId, accountId: a.accountId, userId: a.userId,
-    username: a.username, label: a.label, kind: a.kind,
+    participantId: a.participantId,
+    accountId: a.accountId,
+    userId: a.userId,
+    username: a.username,
+    label: a.label,
+    kind: a.kind,
   };
 }

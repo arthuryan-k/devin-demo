@@ -17,8 +17,22 @@ export class HistoryWriter {
                                        order_type, time_in_force, price_ticks, qty, reason, details, event_time)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
            ON CONFLICT (symbol, seq, event_index) DO NOTHING`,
-          [o.symbol, o.seq, o.eventIndex, o.orderId, o.participantId, o.eventType, o.side, o.orderType,
-            o.timeInForce, o.priceTicks, o.qty, o.reason, JSON.stringify(o.details), o.eventTime],
+          [
+            o.symbol,
+            o.seq,
+            o.eventIndex,
+            o.orderId,
+            o.participantId,
+            o.eventType,
+            o.side,
+            o.orderType,
+            o.timeInForce,
+            o.priceTicks,
+            o.qty,
+            o.reason,
+            JSON.stringify(o.details),
+            o.eventTime,
+          ],
         );
         orders += r.rowCount ?? 0;
       }
@@ -39,8 +53,19 @@ export class HistoryWriter {
                                        WHERE symbol = $1 AND order_id = $5 AND event_type = 'PLACED' LIMIT 1)),
                    $9, $10, $11)
            ON CONFLICT (symbol, seq, event_index) DO NOTHING`,
-          [t.symbol, t.seq, t.eventIndex, t.makerOrderId, t.takerOrderId, t.makerParticipantId,
-            t.takerParticipantId, t.aggressorSide, t.priceTicks, t.qty, t.eventTime],
+          [
+            t.symbol,
+            t.seq,
+            t.eventIndex,
+            t.makerOrderId,
+            t.takerOrderId,
+            t.makerParticipantId,
+            t.takerParticipantId,
+            t.aggressorSide,
+            t.priceTicks,
+            t.qty,
+            t.eventTime,
+          ],
         );
         trades += r.rowCount ?? 0;
       }

@@ -3,7 +3,10 @@ package fixgw;
 import java.util.Arrays;
 
 /** FIX_PORT, AUTH_URL, RISK_URL ("none" to skip), GATEWAY_INSTANCE, INTERNAL_TOKEN, KAFKA_BOOTSTRAP, SYMBOLS, FIX_COMP_ID. */
-public class Main {
+public final class Main {
+    private Main() {
+    }
+
     public static void main(String[] args) throws Exception {
         int port = Integer.parseInt(env("FIX_PORT", "9878"));
         String symbols = env("SYMBOLS", "ACME,GLOBX,INITD,NVTA");

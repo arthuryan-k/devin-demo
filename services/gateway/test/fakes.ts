@@ -50,7 +50,10 @@ export class FakeEngine {
   held: CommandMessage[] = [];
   private book = new Map<number, { side: "BUY" | "SELL"; price: number; qty: number; owner: number; symbol: string }>();
 
-  constructor(private readonly bus: Bus, symbols: string[]) {
+  constructor(
+    private readonly bus: Bus,
+    symbols: string[],
+  ) {
     void bus.subscribe(
       symbols.map((s) => `commands.${s}`),
       async (record) => {
@@ -86,15 +89,33 @@ export class FakeEngine {
           (c.price === null || (c.side === "BUY" ? o.price <= c.price : o.price >= c.price));
         if (!crosses) continue;
         const q = Math.min(o.qty, remaining);
-        events.push({ type: "TradeExecuted", price: o.price, qty: q, makerOrderId: id, takerOrderId: c.orderId, takerSide: c.side });
+        events.push({
+          type: "TradeExecuted",
+          price: o.price,
+          qty: q,
+          makerOrderId: id,
+          takerOrderId: c.orderId,
+          takerSide: c.side,
+        });
         o.qty -= q;
         remaining -= q;
         if (o.qty === 0) this.book.delete(id);
       }
       if (remaining > 0 && c.orderType === "LIMIT" && c.timeInForce === "GTC") {
-        this.book.set(c.orderId, { side: c.side, price: c.price!, qty: remaining, owner: c.participantId, symbol: c.symbol });
+        this.book.set(c.orderId, {
+          side: c.side,
+          price: c.price!,
+          qty: remaining,
+          owner: c.participantId,
+          symbol: c.symbol,
+        });
       } else if (remaining > 0) {
-        events.push({ type: "OrderCancelled", orderId: c.orderId, cancelledQty: remaining, reason: c.orderType === "MARKET" ? "NO_LIQUIDITY" : "IOC" });
+        events.push({
+          type: "OrderCancelled",
+          orderId: c.orderId,
+          cancelledQty: remaining,
+          reason: c.orderType === "MARKET" ? "NO_LIQUIDITY" : "IOC",
+        });
       }
     } else if (c.type === "Cancel") {
       const o = this.book.get(c.orderId);
@@ -111,7 +132,15 @@ export class FakeEngine {
       } else {
         const newPrice = c.newPrice ?? o.price;
         const newQty = c.newQty ?? o.qty;
-        events.push({ type: "OrderAmended", orderId: c.orderId, oldPrice: o.price, newPrice, oldQty: o.qty, newQty, priorityRetained: newPrice === o.price && newQty <= o.qty });
+        events.push({
+          type: "OrderAmended",
+          orderId: c.orderId,
+          oldPrice: o.price,
+          newPrice,
+          oldQty: o.qty,
+          newQty,
+          priorityRetained: newPrice === o.price && newQty <= o.qty,
+        });
         o.price = newPrice;
         o.qty = newQty;
       }

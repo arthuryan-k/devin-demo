@@ -4,15 +4,21 @@ from portfolio.db import transaction
 
 def open_account(pool, account_id, cash, **positions):
     with transaction(pool) as conn:
-        ledger.open_account(conn, account_id, cash,
-                            [ledger.Grant(s, q[0], q[1]) if isinstance(q, tuple) else ledger.Grant(s, q)
-                             for s, q in positions.items()])
+        ledger.open_account(
+            conn,
+            account_id,
+            cash,
+            [ledger.Grant(s, q[0], q[1]) if isinstance(q, tuple) else ledger.Grant(s, q) for s, q in positions.items()],
+        )
 
 
 def check(pool, account_id, symbol, order_id, side, qty, price=None, order_type="LIMIT", tif="GTC", **kw):
     with transaction(pool) as conn:
-        return ledger.check_order(conn, ledger.OrderCheck(account_id, symbol, order_id, side, order_type, tif, qty,
-                                                          price, **kw), auto_open=False)
+        return ledger.check_order(
+            conn,
+            ledger.OrderCheck(account_id, symbol, order_id, side, order_type, tif, qty, price, **kw),
+            auto_open=False,
+        )
 
 
 def settle(pool, symbol, *events, seq=None):

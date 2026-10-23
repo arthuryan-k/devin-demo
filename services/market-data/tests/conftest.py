@@ -9,12 +9,19 @@ INSTRUMENTS = [("ACME", "0.01"), ("GLOBX", "0.05")]
 
 
 def delta(seq, levels=(), events=()):
-    return {"type": "delta", "seq": seq, "levels": [list(l) for l in levels], "events": list(events)}
+    return {"type": "delta", "seq": seq, "levels": [list(level) for level in levels], "events": list(events)}
 
 
 def snapshot(seq, bids=(), asks=(), reason="engine"):
-    return {"type": "snapshot", "seq": seq, "reason": reason, "bids": [list(b) for b in bids],
-            "asks": [list(a) for a in asks], "trades": [], "events": []}
+    return {
+        "type": "snapshot",
+        "seq": seq,
+        "reason": reason,
+        "bids": [list(b) for b in bids],
+        "asks": [list(a) for a in asks],
+        "trades": [],
+        "events": [],
+    }
 
 
 class Exchange:

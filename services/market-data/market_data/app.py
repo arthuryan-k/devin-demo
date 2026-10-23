@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -17,7 +17,7 @@ class Source(Protocol):
     async def stop(self) -> None: ...
 
 
-def create_app(hub: FeedHub, source: Optional[Source] = None) -> FastAPI:
+def create_app(hub: FeedHub, source: Source | None = None) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
         if source is not None:
@@ -33,8 +33,13 @@ def create_app(hub: FeedHub, source: Optional[Source] = None) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
-        return {"ok": True, "symbols": {s: {"seq": f.seq, "ready": f.ready, "subscribers": len(f.subscribers),
-                                            "gaps": f.gaps} for s, f in hub.feeds.items()}}
+        return {
+            "ok": True,
+            "symbols": {
+                s: {"seq": f.seq, "ready": f.ready, "subscribers": len(f.subscribers), "gaps": f.gaps}
+                for s, f in hub.feeds.items()
+            },
+        }
 
     @app.get("/marketdata/symbols")
     async def symbols() -> dict[str, Any]:

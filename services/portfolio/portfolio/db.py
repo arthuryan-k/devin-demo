@@ -1,6 +1,7 @@
 """Connection pool and transactions. The schema is migrated by Flyway from the repo's ``db/migrations``."""
+
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import psycopg
 from psycopg.rows import dict_row
@@ -24,6 +25,5 @@ def open_pool(url: str | None = None, *, min_size: int = 1, max_size: int = 10) 
 @contextmanager
 def transaction(pool: ConnectionPool) -> Iterator[psycopg.Connection]:
     """One READ COMMITTED transaction; row locks (``FOR UPDATE``) give per-account serialization."""
-    with pool.connection() as conn:
-        with conn.transaction():
-            yield conn
+    with pool.connection() as conn, conn.transaction():
+        yield conn

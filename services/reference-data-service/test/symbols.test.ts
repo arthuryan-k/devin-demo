@@ -25,8 +25,13 @@ describe("reference data", () => {
     const { symbols } = res.json();
     expect(symbols.map((s: { symbol: string }) => s.symbol)).toEqual(["ACME", "GLOBX", "INITD", "NVTA"]);
     expect(symbols[0]).toEqual({
-      symbol: "ACME", name: "Acme Corporation", currency: "USD", tickSize: "0.01", lotSize: 1,
-      initialCashGrant: "2500.00", active: true,
+      symbol: "ACME",
+      name: "Acme Corporation",
+      currency: "USD",
+      tickSize: "0.01",
+      lotSize: 1,
+      initialCashGrant: "2500.00",
+      active: true,
     });
   });
 

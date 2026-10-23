@@ -14,7 +14,10 @@ export class KafkaBus implements Bus {
   private producer?: Producer;
   private readonly consumers: Consumer[] = [];
 
-  constructor(brokers: string[], private readonly clientId = "gateway") {
+  constructor(
+    brokers: string[],
+    private readonly clientId = "gateway",
+  ) {
     this.kafka = new Kafka({ clientId, brokers, logLevel: logLevel.WARN });
   }
 
@@ -27,7 +30,10 @@ export class KafkaBus implements Bus {
         const existing = new Set(await admin.listTopics());
         const missing = topics.filter((t) => !existing.has(t));
         if (missing.length > 0) {
-          await admin.createTopics({ topics: missing.map((topic) => ({ topic, numPartitions: 1 })), waitForLeaders: true });
+          await admin.createTopics({
+            topics: missing.map((topic) => ({ topic, numPartitions: 1 })),
+            waitForLeaders: true,
+          });
         }
       } finally {
         await admin.disconnect();

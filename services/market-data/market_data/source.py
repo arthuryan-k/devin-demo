@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Optional
 
 from .hub import FeedHub, topic_for
 
@@ -51,7 +50,7 @@ class KafkaSource:
         self.hub = hub
         self.brokers = brokers
         self.consumer = None
-        self.task: Optional[asyncio.Task] = None
+        self.task: asyncio.Task | None = None
         hub.replay = self._replay
 
     async def start(self) -> None:
@@ -76,7 +75,7 @@ class KafkaSource:
                 self.hub.ingest(record.topic, record.value, record.offset)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("market-data consumer stopped")
             raise
 

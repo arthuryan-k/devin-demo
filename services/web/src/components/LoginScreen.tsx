@@ -46,7 +46,13 @@ export function LoginScreen({ backend, onSession }: { backend: Backend; onSessio
         </div>
         <label>
           Username
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required autoFocus />
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            required
+            autoFocus
+          />
         </label>
         <label>
           Password

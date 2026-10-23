@@ -18,10 +18,11 @@ Reservation rules (lock on placement, release on fill / cancel / reject):
   the engine confirms, because the engine's new quantity replaces the remaining quantity even if fills land
   in between.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 import psycopg
 
@@ -99,9 +100,7 @@ def open_account(conn: psycopg.Connection, account_id: int, cash: int | None, gr
 
 
 def _lock_account(conn: psycopg.Connection, account_id: int, auto_open: bool) -> dict:
-    row = conn.execute(
-        "SELECT * FROM portfolio.accounts WHERE account_id = %s FOR UPDATE", (account_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM portfolio.accounts WHERE account_id = %s FOR UPDATE", (account_id,)).fetchone()
     if row is None and auto_open:
         # The account's cash grant comes from auth-service's account (NUMERIC dollars -> integer cents/ticks).
         conn.execute(
@@ -130,9 +129,7 @@ def _lock_position(conn: psycopg.Connection, account_id: int, symbol: str) -> di
 
 
 def _check_symbol(conn: psycopg.Connection, symbol: str) -> None:
-    listed = conn.execute(
-        "SELECT 1 FROM public.reference_data WHERE symbol = %s AND active", (symbol,)
-    ).fetchone()
+    listed = conn.execute("SELECT 1 FROM public.reference_data WHERE symbol = %s AND active", (symbol,)).fetchone()
     if listed is None:
         raise Reject(Reject.UNKNOWN_SYMBOL, f"unknown symbol {symbol!r}")
 
@@ -197,9 +194,7 @@ def check_order(conn: psycopg.Connection, req: OrderCheck, *, auto_open: bool | 
             limit_price = _market_protection(conn, req)
         reserved_cash = _mul(limit_price, req.qty)
         if reserved_cash > available_cash:
-            raise Reject(
-                Reject.INSUFFICIENT_FUNDS, f"needs {reserved_cash} ticks but only {available_cash} available"
-            )
+            raise Reject(Reject.INSUFFICIENT_FUNDS, f"needs {reserved_cash} ticks but only {available_cash} available")
         conn.execute(
             "UPDATE portfolio.accounts SET reserved_cash = reserved_cash + %s, updated_at = now() "
             "WHERE account_id = %s",
@@ -226,8 +221,18 @@ def check_order(conn: psycopg.Connection, req: OrderCheck, *, auto_open: bool | 
     conn.execute(
         "INSERT INTO portfolio.reservations (symbol, order_id, account_id, side, order_type, tif, limit_price, "
         "open_qty, reserved_cash, reserved_shares, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')",
-        (req.symbol, req.order_id, req.account_id, req.side, req.order_type, req.tif, limit_price, req.qty,
-         reserved_cash, reserved_shares),
+        (
+            req.symbol,
+            req.order_id,
+            req.account_id,
+            req.side,
+            req.order_type,
+            req.tif,
+            limit_price,
+            req.qty,
+            reserved_cash,
+            reserved_shares,
+        ),
     )
     return Approval(req.order_id, reserved_cash, reserved_shares, limit_price, available_cash, available_shares)
 
@@ -253,7 +258,11 @@ def _lock_own_live_order(conn: psycopg.Connection, account_id: int, symbol: str,
 
 
 def check_amend(
-    conn: psycopg.Connection, account_id: int, symbol: str, order_id: int, new_price: int | None,
+    conn: psycopg.Connection,
+    account_id: int,
+    symbol: str,
+    order_id: int,
+    new_price: int | None,
     new_qty: int | None,
 ) -> Approval:
     """Reserves for an amend until the engine confirms (``OrderAmended``) or rejects it. Raises :class:`Reject`."""
@@ -347,7 +356,10 @@ def release(conn: psycopg.Connection, account_id: int, symbol: str, order_id: in
             (symbol, order_id),
         )
     return Approval(
-        order_id, cash, shares, res["limit_price"],
+        order_id,
+        cash,
+        shares,
+        res["limit_price"],
         account["cash"] - account["reserved_cash"] + cash,
         position["shares"] - position["reserved_shares"] + shares,
     )
@@ -507,8 +519,7 @@ def _live(batch: _Batch, order_id: int) -> dict | None:
 def _release_all(batch: _Batch, res: dict, status: str) -> None:
     batch.accounts[res["account_id"]]["reserved_cash"] -= res["reserved_cash"] + res["pending_cash"]
     batch.positions[res["account_id"]]["reserved_shares"] -= res["reserved_shares"] + res["pending_shares"]
-    res.update(status=status, reserved_cash=0, reserved_shares=0, pending_cash=0, pending_shares=0,
-               amend_pending=False)
+    res.update(status=status, reserved_cash=0, reserved_shares=0, pending_cash=0, pending_shares=0, amend_pending=False)
 
 
 def _release_pending(batch: _Batch, res: dict) -> None:
@@ -565,8 +576,9 @@ def _confirm_amend(batch: _Batch, res: dict, event: Amended) -> None:
             raise InvariantBreach(f"amend of order {res['order_id']} needs {event.new_qty - held} unreserved shares")
         position["reserved_shares"] += event.new_qty - held
         res["reserved_shares"] = event.new_qty
-    res.update(limit_price=event.new_price, open_qty=event.new_qty, pending_cash=0, pending_shares=0,
-               amend_pending=False)
+    res.update(
+        limit_price=event.new_price, open_qty=event.new_qty, pending_cash=0, pending_shares=0, amend_pending=False
+    )
 
 
 def _fill(batch: _Batch, order_id: int, trade: Trade, seq: int | None) -> None:
@@ -628,25 +640,34 @@ def account_view(conn: psycopg.Connection, account_id: int) -> dict | None:
         equity += market_value or 0
         realized += p["realized_pnl"]
         unrealized += upnl
-        positions.append({
-            "symbol": p["symbol"],
-            "shares": p["shares"],
-            "reservedShares": p["reserved_shares"],
-            "availableShares": p["shares"] - p["reserved_shares"],
-            "costBasis": p["cost_basis"],
-            "avgCost": round(p["cost_basis"] / p["shares"]) if p["shares"] else None,
-            "markPrice": mark,
-            "marketValue": market_value,
-            "realizedPnl": p["realized_pnl"],
-            "unrealizedPnl": upnl,
-        })
+        positions.append(
+            {
+                "symbol": p["symbol"],
+                "shares": p["shares"],
+                "reservedShares": p["reserved_shares"],
+                "availableShares": p["shares"] - p["reserved_shares"],
+                "costBasis": p["cost_basis"],
+                "avgCost": round(p["cost_basis"] / p["shares"]) if p["shares"] else None,
+                "markPrice": mark,
+                "marketValue": market_value,
+                "realizedPnl": p["realized_pnl"],
+                "unrealizedPnl": upnl,
+            }
+        )
     orders = [
         {
-            "symbol": r["symbol"], "orderId": r["order_id"], "side": r["side"], "type": r["order_type"],
-            "tif": r["tif"], "limitPrice": r["limit_price"], "openQty": r["open_qty"], "filledQty": r["filled_qty"],
+            "symbol": r["symbol"],
+            "orderId": r["order_id"],
+            "side": r["side"],
+            "type": r["order_type"],
+            "tif": r["tif"],
+            "limitPrice": r["limit_price"],
+            "openQty": r["open_qty"],
+            "filledQty": r["filled_qty"],
             "reservedCash": r["reserved_cash"] + r["pending_cash"],
             "reservedShares": r["reserved_shares"] + r["pending_shares"],
-            "status": r["status"], "amendPending": r["amend_pending"],
+            "status": r["status"],
+            "amendPending": r["amend_pending"],
         }
         for r in conn.execute(
             "SELECT * FROM portfolio.reservations WHERE account_id = %s AND status IN ('PENDING', 'OPEN') "

@@ -7,13 +7,10 @@ export function useAccount(backend: Backend): { view: AccountView | null; error:
   const [error, setError] = useState<Error | null>(null);
   useEffect(
     () =>
-      backend.subscribeAccount(
-        (v) => {
-          setView(v);
-          setError(null);
-        },
-        setError,
-      ),
+      backend.subscribeAccount((v) => {
+        setView(v);
+        setError(null);
+      }, setError),
     [backend],
   );
   return { view, error };

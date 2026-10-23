@@ -11,9 +11,20 @@ export function PortfolioPanel({ account, onSelect }: { account: AccountView | n
         <Row k="Total Cash" v={fmtMoney(p?.cash)} testId="pf-cash" />
         <Row k="Reserved (open orders)" v={fmtMoney(p?.reservedCash)} testId="pf-reserved" />
         <Row k="Available Funds" v={fmtMoney(p?.availableCash)} testId="pf-available" />
-        <Row k="Session P&L" v={fmtSigned(p?.sessionPnl)} cls={pnlClass(p?.sessionPnl)} strong testId="pf-session-pnl" />
+        <Row
+          k="Session P&L"
+          v={fmtSigned(p?.sessionPnl)}
+          cls={pnlClass(p?.sessionPnl)}
+          strong
+          testId="pf-session-pnl"
+        />
         <Row k="Realized P&L" v={fmtSigned(p?.realizedPnl)} cls={pnlClass(p?.realizedPnl)} testId="pf-realized" />
-        <Row k="Unrealized P&L" v={fmtSigned(p?.unrealizedPnl)} cls={pnlClass(p?.unrealizedPnl)} testId="pf-unrealized" />
+        <Row
+          k="Unrealized P&L"
+          v={fmtSigned(p?.unrealizedPnl)}
+          cls={pnlClass(p?.unrealizedPnl)}
+          testId="pf-unrealized"
+        />
       </dl>
       <table className="grid compact positions" data-testid="positions">
         <thead>
@@ -43,7 +54,12 @@ export function PortfolioPanel({ account, onSelect }: { account: AccountView | n
             </tr>
           ) : (
             p.positions.map((x) => (
-              <tr key={x.symbol} className="clickable" onClick={() => onSelect(x.symbol)} data-testid={`pos-${x.symbol}`}>
+              <tr
+                key={x.symbol}
+                className="clickable"
+                onClick={() => onSelect(x.symbol)}
+                data-testid={`pos-${x.symbol}`}
+              >
                 <td className="l sym">{x.symbol}</td>
                 <td className="num" data-testid={`pos-${x.symbol}-qty`}>
                   {fmtQty(x.qty)}

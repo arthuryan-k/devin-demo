@@ -14,7 +14,7 @@ import {
   type Side,
   type TimeInForce,
 } from "./contracts.js";
-import { Correlator, CorrelationTimeout } from "./correlator.js";
+import { type Correlator, CorrelationTimeout } from "./correlator.js";
 import { ApiError } from "./errors.js";
 import type { OrderIdAllocator } from "./ids.js";
 import type { OrderIndex } from "./orderIndex.js";
@@ -92,7 +92,8 @@ export class OrderService {
     const timeInForce = choice("timeInForce", input.timeInForce, TIFS, orderType === "MARKET" ? "IOC" : "GTC");
     const qty = guard(() => parseQty("qty", input.qty, instrument.lotSize));
     const price = orderType === "LIMIT" ? guard(() => ticks.toTicks("price", input.price)) : null;
-    const orderId = input.id === undefined || String(input.id).trim() === "" ? this.deps.ids.next() : orderIdOf(input.id);
+    const orderId =
+      input.id === undefined || String(input.id).trim() === "" ? this.deps.ids.next() : orderIdOf(input.id);
     const symbol = instrument.symbol;
 
     this.admit(who, true);
@@ -114,14 +115,27 @@ export class OrderService {
     // A protected MARKET order goes to the engine as an aggressive LIMIT that can never rest.
     const sent =
       orderType === "MARKET" && side === "BUY" && decision.limitPrice !== undefined
-        ? { orderType: "LIMIT" as const, timeInForce: timeInForce === "FOK" ? ("FOK" as const) : ("IOC" as const), price: decision.limitPrice }
+        ? {
+            orderType: "LIMIT" as const,
+            timeInForce: timeInForce === "FOK" ? ("FOK" as const) : ("IOC" as const),
+            price: decision.limitPrice,
+          }
         : { orderType, timeInForce, price };
     this.deps.index.remember(orderId, symbol);
     this.deps.index.placeStarted(who.participantId);
     try {
       return await this.send(
         ticks,
-        { type: "Place", correlationId: randomUUID(), participantId: who.participantId, symbol, orderId, side, ...sent, qty },
+        {
+          type: "Place",
+          correlationId: randomUUID(),
+          participantId: who.participantId,
+          symbol,
+          orderId,
+          side,
+          ...sent,
+          qty,
+        },
         () => this.deps.risk.release({ participantId: who.participantId, accountId: who.accountId, symbol, orderId }),
       );
     } finally {
@@ -137,11 +151,25 @@ export class OrderService {
       return notOwn;
     }
     // Risk owns the ledger across gateway instances; it confirms ownership but reserves nothing for a cancel.
-    const decision = await this.risk({ action: "CANCEL", participantId: who.participantId, accountId: who.accountId, symbol, orderId, price: null, qty: null });
+    const decision = await this.risk({
+      action: "CANCEL",
+      participantId: who.participantId,
+      accountId: who.accountId,
+      symbol,
+      orderId,
+      price: null,
+      qty: null,
+    });
     if (!decision.approved) {
       return riskRejected(orderId, symbol, who, decision);
     }
-    return this.send(ticks, { type: "Cancel", correlationId: randomUUID(), participantId: who.participantId, symbol, orderId });
+    return this.send(ticks, {
+      type: "Cancel",
+      correlationId: randomUUID(),
+      participantId: who.participantId,
+      symbol,
+      orderId,
+    });
   }
 
   async amend(who: Principal, orderId: number, input: AmendInput): Promise<OrderReply> {
@@ -170,15 +198,26 @@ export class OrderService {
     if (!decision.approved) {
       return riskRejected(orderId, symbol, who, decision);
     }
-    return this.send(ticks, {
-      type: "Amend",
-      correlationId: randomUUID(),
-      participantId: who.participantId,
-      symbol,
-      orderId,
-      newPrice,
-      newQty,
-    }, () => this.deps.risk.release({ participantId: who.participantId, accountId: who.accountId, symbol, orderId, kind: "amend" }));
+    return this.send(
+      ticks,
+      {
+        type: "Amend",
+        correlationId: randomUUID(),
+        participantId: who.participantId,
+        symbol,
+        orderId,
+        newPrice,
+        newQty,
+      },
+      () =>
+        this.deps.risk.release({
+          participantId: who.participantId,
+          accountId: who.accountId,
+          symbol,
+          orderId,
+          kind: "amend",
+        }),
+    );
   }
 
   /** 403 once blocked; 429 (counted as a violation) when over the rate or open-order limit. */
@@ -238,7 +277,11 @@ export class OrderService {
     }
   }
 
-  private async send(ticks: TickConverter, command: CommandMessage, onUnpublished?: () => Promise<void>): Promise<OrderReply> {
+  private async send(
+    ticks: TickConverter,
+    command: CommandMessage,
+    onUnpublished?: () => Promise<void>,
+  ): Promise<OrderReply> {
     const response = this.deps.correlator.expect(command.correlationId);
     response.catch(() => undefined);
     try {
@@ -276,7 +319,11 @@ export class OrderService {
     }
     const hit = this.deps.symbols.get(s);
     if (!hit) {
-      throw new ApiError(400, "UNKNOWN_SYMBOL", `unknown symbol ${s}; listed: ${this.deps.symbols.symbols().join(", ")}`);
+      throw new ApiError(
+        400,
+        "UNKNOWN_SYMBOL",
+        `unknown symbol ${s}; listed: ${this.deps.symbols.symbols().join(", ")}`,
+      );
     }
     return hit;
   }
@@ -310,7 +357,12 @@ export function renderEvent(e: EngineEvent, ticks: TickConverter): Record<string
   }
 }
 
-function riskRejected(orderId: number, symbol: string, who: Principal, d: { reason: string; message: string }): OrderReply {
+function riskRejected(
+  orderId: number,
+  symbol: string,
+  who: Principal,
+  d: { reason: string; message: string },
+): OrderReply {
   return {
     orderId,
     symbol,

@@ -1,4 +1,5 @@
 """Randomized multi-account, multi-symbol flow through a tiny reference matcher; the ledger must stay consistent."""
+
 import random
 
 import pytest
@@ -20,8 +21,7 @@ class Book:
 
     def place(self, oid, owner, side, price, qty, tif):
         events = [Placed(oid)]
-        for mid, m in sorted(self.orders.items(), key=lambda kv: (kv[1][1] if side == "BUY" else -kv[1][1],
-                                                                  kv[1][4])):
+        for mid, m in sorted(self.orders.items(), key=lambda kv: (kv[1][1] if side == "BUY" else -kv[1][1], kv[1][4])):
             if qty == 0:
                 break
             crosses = m[0] != side and (price >= m[1] if side == "BUY" else price <= m[1])
@@ -81,8 +81,9 @@ def test_random_flow_never_breaks_invariants(pool, seed):
                 if action < 0.65 or not own:
                     side = rng.choice(["BUY", "SELL"])
                     price, qty, tif = rng.randint(90, 110), rng.randint(1, 30), rng.choice(["GTC", "GTC", "IOC"])
-                    ledger.check_order(conn, ledger.OrderCheck(a, s, next_id, side, "LIMIT", tif, qty, price),
-                                       auto_open=False)
+                    ledger.check_order(
+                        conn, ledger.OrderCheck(a, s, next_id, side, "LIMIT", tif, qty, price), auto_open=False
+                    )
                     events = ("place", next_id, a, side, price, qty, tif)
                     next_id += 1
                 elif action < 0.85:

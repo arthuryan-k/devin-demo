@@ -61,7 +61,9 @@ export function PriceChart({ symbol }: { symbol: string }) {
   const [mode, setMode] = useState<Mode>("line");
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
-  const series = useRef<{ main: ISeriesApi<"Area"> | ISeriesApi<"Candlestick">; vol: ISeriesApi<"Histogram"> } | null>(null);
+  const series = useRef<{ main: ISeriesApi<"Area"> | ISeriesApi<"Candlestick">; vol: ISeriesApi<"Histogram"> } | null>(
+    null,
+  );
   const shown = useRef<string>("");
 
   useEffect(() => {

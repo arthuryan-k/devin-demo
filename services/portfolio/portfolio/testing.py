@@ -1,4 +1,5 @@
 """Pytest fixtures shared by the portfolio and risk test suites: a throwaway Postgres (docker) with migrations."""
+
 from __future__ import annotations
 
 import os
@@ -6,17 +7,18 @@ import socket
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 import psycopg
 import pytest
 
-from pathlib import Path
-
 from portfolio.db import open_pool
 
 MIGRATIONS = Path(__file__).resolve().parents[3] / "db" / "migrations"
-TABLES = "portfolio.fills, portfolio.reservations, portfolio.positions, portfolio.accounts, portfolio.marks, " \
-         "portfolio.consumer_offsets, public.users"
+TABLES = (
+    "portfolio.fills, portfolio.reservations, portfolio.positions, portfolio.accounts, portfolio.marks, "
+    "portfolio.consumer_offsets, public.users"
+)
 
 
 def _free_port() -> int:
@@ -35,9 +37,23 @@ def database_url():
     name = f"portfolio-test-{uuid.uuid4().hex[:8]}"
     port = _free_port()
     subprocess.run(
-        ["docker", "run", "-d", "--rm", "--name", name, "-e", "POSTGRES_PASSWORD=postgres", "-e",
-         "POSTGRES_DB=brokerage", "-p", f"127.0.0.1:{port}:5432", "postgres:16-alpine"],
-        check=True, capture_output=True,
+        [
+            "docker",
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            name,
+            "-e",
+            "POSTGRES_PASSWORD=postgres",
+            "-e",
+            "POSTGRES_DB=brokerage",
+            "-p",
+            f"127.0.0.1:{port}:5432",
+            "postgres:16-alpine",
+        ],
+        check=True,
+        capture_output=True,
     )
     url = f"postgresql://postgres:postgres@127.0.0.1:{port}/brokerage"
     try:
@@ -59,10 +75,23 @@ def migrate(url: str) -> None:
     """Runs the repo's Flyway migrations (db/migrations) against ``url``, exactly as docker compose does."""
     info = psycopg.conninfo.conninfo_to_dict(url)
     subprocess.run(
-        ["docker", "run", "--rm", "--network", "host", "-v", f"{MIGRATIONS}:/flyway/sql:ro", "flyway/flyway:10-alpine",
-         f"-url=jdbc:postgresql://{info['host']}:{info.get('port', 5432)}/{info['dbname']}",
-         f"-user={info['user']}", f"-password={info.get('password', '')}", "-connectRetries=10", "migrate"],
-        check=True, capture_output=True,
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "host",
+            "-v",
+            f"{MIGRATIONS}:/flyway/sql:ro",
+            "flyway/flyway:10-alpine",
+            f"-url=jdbc:postgresql://{info['host']}:{info.get('port', 5432)}/{info['dbname']}",
+            f"-user={info['user']}",
+            f"-password={info.get('password', '')}",
+            "-connectRetries=10",
+            "migrate",
+        ],
+        check=True,
+        capture_output=True,
     )
 
 
@@ -90,4 +119,4 @@ def clean(pool):
     with pool.connection() as conn:
         conn.execute(f"TRUNCATE {TABLES} CASCADE")
         conn.commit()
-    yield
+    return

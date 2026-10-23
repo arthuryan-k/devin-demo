@@ -3,7 +3,10 @@ package fixgw;
 import java.math.BigDecimal;
 
 /** Decimal FIX prices <-> integer ticks (0.01). */
-public class Prices {
+public final class Prices {
+    private Prices() {
+    }
+
     public static final int SCALE = 2;
 
     public static long toTicks(String px) {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Callable, Iterable, Optional
+from collections.abc import Callable, Iterable
 
 from .feed import SymbolFeed
 
@@ -15,25 +15,24 @@ def topic_for(symbol: str) -> str:
     return TOPIC_PREFIX + symbol
 
 
-def symbol_for(topic: str) -> Optional[str]:
-    return topic[len(TOPIC_PREFIX):] if topic.startswith(TOPIC_PREFIX) else None
+def symbol_for(topic: str) -> str | None:
+    return topic[len(TOPIC_PREFIX) :] if topic.startswith(TOPIC_PREFIX) else None
 
 
 class FeedHub:
     """All symbol feeds. Each symbol has its own book, sequence and subscriber set; nothing is shared across them."""
 
     def __init__(self, instruments: Iterable[tuple[str, str]], max_backlog: int = 1024):
-        self.replay: Optional[Callable[[str, int], None]] = None
+        self.replay: Callable[[str, int], None] | None = None
         self.feeds = {
-            symbol: SymbolFeed(symbol, tick, max_backlog, replay=self._replay)
-            for symbol, tick in instruments
+            symbol: SymbolFeed(symbol, tick, max_backlog, replay=self._replay) for symbol, tick in instruments
         }
 
     def _replay(self, symbol: str, offset: int) -> None:
         if self.replay is not None:
             self.replay(symbol, offset)
 
-    def feed(self, symbol: str) -> Optional[SymbolFeed]:
+    def feed(self, symbol: str) -> SymbolFeed | None:
         return self.feeds.get(symbol.upper())
 
     def ingest(self, topic: str, value: bytes | str | dict, offset: int = -1) -> None:

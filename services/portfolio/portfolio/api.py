@@ -1,8 +1,8 @@
 """Portfolio service: read API over the ledger plus the ``events.<symbol>`` settlement consumer."""
+
 from __future__ import annotations
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -22,7 +22,9 @@ class GrantIn(BaseModel):
 
 class OpenAccountIn(BaseModel):
     accountId: int
-    cash: int | None = Field(None, ge=0, description="Cash grant in ticks; defaults to the auth-service account's starting_cash")
+    cash: int | None = Field(
+        None, ge=0, description="Cash grant in ticks; defaults to the auth-service account's starting_cash"
+    )
     positions: list[GrantIn] = []
 
 
@@ -56,13 +58,14 @@ def create_app(pool=None, *, run_consumer: bool | None = None) -> FastAPI:
         cash = body.cash
         try:
             with transaction(request.app.state.pool) as conn:
-                ledger.open_account(conn, body.accountId, cash,
-                                    [ledger.Grant(g.symbol, g.shares, g.avgCost) for g in body.positions])
+                ledger.open_account(
+                    conn, body.accountId, cash, [ledger.Grant(g.symbol, g.shares, g.avgCost) for g in body.positions]
+                )
                 return ledger.account_view(conn, body.accountId)
         except ledger.AccountExists:
-            raise HTTPException(409, f"account {body.accountId} already exists")
+            raise HTTPException(409, f"account {body.accountId} already exists") from None
         except ledger.Reject as e:
-            raise HTTPException(400, {"reason": e.reason, "message": e.message})
+            raise HTTPException(400, {"reason": e.reason, "message": e.message}) from e
 
     @app.get("/v1/accounts/{account_id}")
     def get_account(account_id: int, request: Request):
@@ -81,8 +84,16 @@ def create_app(pool=None, *, run_consumer: bool | None = None) -> FastAPI:
                 (account_id, min(max(limit, 1), 1000)),
             ).fetchall()
         return [
-            {"fillId": r["fill_id"], "symbol": r["symbol"], "orderId": r["order_id"], "side": r["side"],
-             "price": r["price"], "qty": r["qty"], "seq": r["seq"], "settledAt": r["settled_at"].isoformat()}
+            {
+                "fillId": r["fill_id"],
+                "symbol": r["symbol"],
+                "orderId": r["order_id"],
+                "side": r["side"],
+                "price": r["price"],
+                "qty": r["qty"],
+                "seq": r["seq"],
+                "settledAt": r["settled_at"].isoformat(),
+            }
             for r in rows
         ]
 

@@ -73,8 +73,18 @@ export class MarketStore {
   ) {
     for (const inst of instruments) {
       const e: Entry = {
-        inst, replica: new BookReplica(), status: "connecting", trades: [], series: [], seenTrades: new Set(),
-        open: null, high: null, low: null, volume: 0, resyncs: 0, state: undefined as unknown as MarketState,
+        inst,
+        replica: new BookReplica(),
+        status: "connecting",
+        trades: [],
+        series: [],
+        seenTrades: new Set(),
+        open: null,
+        high: null,
+        low: null,
+        volume: 0,
+        resyncs: 0,
+        state: undefined as unknown as MarketState,
       };
       e.state = this.build(e);
       this.entries.set(inst.symbol, e);
@@ -162,7 +172,14 @@ export class MarketStore {
       e.seenTrades.add(id);
       const price = fromTicks(t.price, tick);
       const time = t.ts ?? now;
-      e.trades.unshift({ id, time, price, qty: t.qty, side: t.takerSide, mine: this.isMine(t.maker) || this.isMine(t.taker) });
+      e.trades.unshift({
+        id,
+        time,
+        price,
+        qty: t.qty,
+        side: t.takerSide,
+        mine: this.isMine(t.maker) || this.isMine(t.taker),
+      });
       if (!fromSnapshot) e.volume += t.qty;
       if (e.open == null) e.open = price;
       this.extremes(e, price);

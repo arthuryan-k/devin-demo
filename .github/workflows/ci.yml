@@ -6,6 +6,69 @@ on:
     branches: [main]
 
 jobs:
+  lint-node:
+    name: lint (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [gateway, auth-service, reference-data-service, history-writer, web]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+      - run: npm ci
+      - name: ESLint + Prettier
+        run: npm run lint
+
+  lint-python:
+    name: lint (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [market-data, portfolio, risk]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install ruff==0.8.6
+      - name: Ruff lint
+        run: ruff check --output-format=github .
+      - name: Ruff format
+        run: ruff format --check .
+
+  lint-java:
+    name: lint (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [matching-engine, simulator, fix-gateway]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: services/${{ matrix.service }}/pom.xml
+      - name: Checkstyle
+        run: mvn -B checkstyle:check
+
   matching-engine:
     runs-on: ubuntu-latest
     defaults:
@@ -79,6 +142,16 @@ jobs:
       - run: pip install -r requirements-dev.txt
       # Tests start a throwaway Postgres and apply db/migrations with the Flyway image (docker).
       - run: python -m pytest -q
+
+  eod-recon:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/eod-recon
+    steps:
+      - uses: actions/checkout@v4
+      - run: perl -c bin/eod_recon.pl && sh -n bin/eod_run.sh
+      - run: prove -v t/
 
   compose:
     runs-on: ubuntu-latest

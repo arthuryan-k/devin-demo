@@ -31,7 +31,18 @@ export class OrderIndex {
 
   /** Open orders plus places submitted but not yet answered by the engine. */
   openOrders(participantId: number): number {
-    return (this.counts.get(participantId) ?? 0) + (this.inFlight.get(participantId) ?? 0);
+    let n = 0;
+    for (const o of this.open.values()) {
+      if (o.participantId === participantId) {
+        n++;
+      }
+    }
+    return n + (this.inFlight.get(participantId) ?? 0);
+  }
+
+  /** Open orders per participant (not counting in-flight places). */
+  openCount(participantId: number): number {
+    return this.counts.get(participantId) ?? 0;
   }
 
   placeStarted(participantId: number): void {

@@ -6,11 +6,21 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TokenIssuer } from "../src/tokens.js";
 import { startApp, uniqueName } from "./harness.js";
 
-const pem = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+const pem = generateKeyPairSync("rsa", { modulusLength: 2048 })
+  .privateKey.export({ type: "pkcs8", format: "pem" })
+  .toString();
 let h: Awaited<ReturnType<typeof startApp>>;
 
 beforeAll(async () => {
-  h = await startApp({}, await TokenIssuer.create({ issuer: "devin-demo-auth", audience: "devin-demo", ttlSeconds: 3600, privateKeyPem: pem }));
+  h = await startApp(
+    {},
+    await TokenIssuer.create({
+      issuer: "devin-demo-auth",
+      audience: "devin-demo",
+      ttlSeconds: 3600,
+      privateKeyPem: pem,
+    }),
+  );
 });
 afterAll(() => h.close());
 
@@ -68,7 +78,9 @@ describe("signup", () => {
     expect((await signup("a")).statusCode).toBe(400);
     expect((await signup("you")).statusCode).toBe(400);
     expect((await signup(uniqueName(), "short")).statusCode).toBe(400);
-    expect((await h.app.inject({ method: "POST", url: "/auth/signup", payload: { username: "x" } })).statusCode).toBe(400);
+    expect((await h.app.inject({ method: "POST", url: "/auth/signup", payload: { username: "x" } })).statusCode).toBe(
+      400,
+    );
   });
 });
 
@@ -119,10 +131,18 @@ describe("session tokens", () => {
 
   it("returns 401 for an expired token signed with the right key", async () => {
     const created = (await signup(uniqueName())).json();
-    const stale = await TokenIssuer.create({ issuer: "devin-demo-auth", audience: "devin-demo", ttlSeconds: -60, privateKeyPem: pem });
+    const stale = await TokenIssuer.create({
+      issuer: "devin-demo-auth",
+      audience: "devin-demo",
+      ttlSeconds: -60,
+      privateKeyPem: pem,
+    });
     const token = await stale.issue({
-      userId: created.user.id, accountId: created.account.id, participantId: created.account.participantId,
-      username: created.user.username, kind: "human",
+      userId: created.user.id,
+      accountId: created.account.id,
+      participantId: created.account.participantId,
+      username: created.user.username,
+      kind: "human",
     });
     const res = await me({ authorization: `Bearer ${token}` });
     expect(res.statusCode).toBe(401);
@@ -130,7 +150,12 @@ describe("session tokens", () => {
   });
 
   it("returns 401 for a token minted for another audience", async () => {
-    const other = await TokenIssuer.create({ issuer: "devin-demo-auth", audience: "someone-else", ttlSeconds: 60, privateKeyPem: pem });
+    const other = await TokenIssuer.create({
+      issuer: "devin-demo-auth",
+      audience: "someone-else",
+      ttlSeconds: 60,
+      privateKeyPem: pem,
+    });
     const token = await other.issue({ userId: 1, accountId: 1, participantId: 1001, username: "x", kind: "human" });
     expect((await me({ authorization: `Bearer ${token}` })).statusCode).toBe(401);
   });

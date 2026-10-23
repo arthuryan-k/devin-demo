@@ -12,7 +12,15 @@ export interface TicketPreset {
   nonce: number;
 }
 
-export function OrderTicket({ symbol, account, preset }: { symbol: string; account: AccountView | null; preset?: TicketPreset }) {
+export function OrderTicket({
+  symbol,
+  account,
+  preset,
+}: {
+  symbol: string;
+  account: AccountView | null;
+  preset?: TicketPreset;
+}) {
   const ws = useWorkspace();
   const inst = instrumentOf(ws, symbol);
   const m = useMarket(ws.store, symbol);
@@ -52,7 +60,8 @@ export function OrderTicket({ symbol, account, preset }: { symbol: string; accou
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (!Number.isInteger(q) || q <= 0 || q % inst.lotSize !== 0) return setError(`Quantity must be a positive multiple of ${inst.lotSize}`);
+    if (!Number.isInteger(q) || q <= 0 || q % inst.lotSize !== 0)
+      return setError(`Quantity must be a positive multiple of ${inst.lotSize}`);
     let limit: number | undefined;
     if (type === "LIMIT") {
       limit = Number(price);
@@ -61,8 +70,16 @@ export function OrderTicket({ symbol, account, preset }: { symbol: string; accou
     }
     setBusy(true);
     try {
-      const r = await ws.backend.placeOrder({ symbol, side, type, timeInForce: type === "MARKET" ? "IOC" : tif, price: limit, qty: q });
-      const what = `${side} ${fmtQty(q)} ${symbol} ${type === "MARKET" ? "MKT" : `LMT ${limit!.toFixed(dec)}`} ${type === "MARKET" ? "" : tif}`.trim();
+      const r = await ws.backend.placeOrder({
+        symbol,
+        side,
+        type,
+        timeInForce: type === "MARKET" ? "IOC" : tif,
+        price: limit,
+        qty: q,
+      });
+      const what =
+        `${side} ${fmtQty(q)} ${symbol} ${type === "MARKET" ? "MKT" : `LMT ${limit!.toFixed(dec)}`} ${type === "MARKET" ? "" : tif}`.trim();
       ws.notify(
         r.status === "REJECTED" ? "error" : "success",
         `#${r.orderId} ${what}: ${r.status.replace("_", " ")}${r.filledQty ? ` (filled ${fmtQty(r.filledQty)})` : ""}${r.reason ? ` — ${r.reason}` : ""}`,
@@ -80,10 +97,20 @@ export function OrderTicket({ symbol, account, preset }: { symbol: string; accou
     <Panel title={`Order Entry · ${symbol}`} className="ticket" testId="order-ticket">
       <form onSubmit={submit} aria-label="Order ticket" autoComplete="off">
         <div className="side-toggle" role="group" aria-label="Side">
-          <button type="button" className={`buy ${side === "BUY" ? "on" : ""}`} aria-pressed={side === "BUY"} onClick={() => setSide("BUY")}>
+          <button
+            type="button"
+            className={`buy ${side === "BUY" ? "on" : ""}`}
+            aria-pressed={side === "BUY"}
+            onClick={() => setSide("BUY")}
+          >
             BUY
           </button>
-          <button type="button" className={`sell ${side === "SELL" ? "on" : ""}`} aria-pressed={side === "SELL"} onClick={() => setSide("SELL")}>
+          <button
+            type="button"
+            className={`sell ${side === "SELL" ? "on" : ""}`}
+            aria-pressed={side === "SELL"}
+            onClick={() => setSide("SELL")}
+          >
             SELL
           </button>
         </div>
