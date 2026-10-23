@@ -143,6 +143,16 @@ jobs:
       # Tests start a throwaway Postgres and apply db/migrations with the Flyway image (docker).
       - run: python -m pytest -q
 
+  eod-recon:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/eod-recon
+    steps:
+      - uses: actions/checkout@v4
+      - run: perl -c bin/eod_recon.pl && sh -n bin/eod_run.sh
+      - run: prove -v t/
+
   compose:
     runs-on: ubuntu-latest
     steps:

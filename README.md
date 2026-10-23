@@ -23,11 +23,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for internals (exchange core, per-symbol 
 | `services/auth-service/` | TypeScript / Fastify: signup, login (JWT), API keys and participant accounts in Postgres. |
 | `services/reference-data-service/` | TypeScript / Fastify: the listed symbols and their trading parameters over REST. |
 | `services/history-writer/` | TypeScript / KafkaJS: writes `events.<symbol>` order lifecycle and fills to Postgres and serves them per participant (`GET /v1/orders`, `/v1/trades`). |
+| `services/eod-recon/` | Perl 5 + shell, legacy batch: end-of-day ledger reconciliation report and fixed-width clearing export, read from Postgres. See its [README](services/eod-recon/README.md). |
 | `db/migrations/` | Flyway SQL migrations for the brokerage database. |
 | `tests/e2e/` | End-to-end checks against the running compose stack (simulator, accounts, FIX round trip). |
 | `docker-compose.yml` | Postgres, migrations, the Redpanda (Kafka API) event bus, the matching engine and the services above. |
 | `ARCHITECTURE.md` | Internals of the services. |
-| `.github/workflows/` | CI: tests the matching engine and the web app, and deploys the live demo to GitHub Pages. |
+| `.github/workflows/` | CI: lint gates per service (ESLint + Prettier, Ruff, Checkstyle; `npm run lint`, `ruff check . && ruff format --check .`, `mvn checkstyle:check`), tests for every service, and the live demo deploy to GitHub Pages. |
 
 Listed symbols (served by the reference-data service, built in otherwise): `ACME`, `GLOBX`, `INITD`, `NVTA`. Every book starts empty, with no liquidity and no price; the
 simulator trades all four.

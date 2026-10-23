@@ -207,7 +207,19 @@ services:
       risk: { condition: service_started }
     restart: unless-stopped
 
+  eod-recon:
+    build: ./services/eod-recon
+    environment:
+      DATABASE_URL: postgres://brokerage:${POSTGRES_PASSWORD:-brokerage}@postgres:5432/brokerage
+      RECON_INTERVAL: ${RECON_INTERVAL:-3600}
+    volumes:
+      - eod-spool:/var/spool/eod
+    depends_on:
+      db-migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redpanda-data:
   engine-journal:
+  eod-spool:
