@@ -112,7 +112,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   if (deps.portfolioUrl) {
     const portfolioUrl = deps.portfolioUrl.replace(/\/$/, "");
     app.get("/api/portfolio", { preHandler: authenticate }, async (request, reply) => {
-      return forward(reply, `${portfolioUrl}/v1/accounts/${request.principal!.participantId}`, "PORTFOLIO_UNAVAILABLE", "portfolio");
+      return forward(
+        reply,
+        `${portfolioUrl}/v1/accounts/${request.principal!.participantId}`,
+        "PORTFOLIO_UNAVAILABLE",
+        "portfolio",
+      );
     });
   }
 
@@ -163,7 +168,11 @@ function cookieValue(header: string | undefined, name: string): string | undefin
 }
 
 /** {@code Authorization: Bearer <jwt>}, {@code X-Api-Key}, or the session cookie; 401 when missing or not recognised. */
-async function resolvePrincipal(request: FastifyRequest, auth: Authenticator, sessionCookie: string): Promise<Principal> {
+async function resolvePrincipal(
+  request: FastifyRequest,
+  auth: Authenticator,
+  sessionCookie: string,
+): Promise<Principal> {
   const header = request.headers.authorization;
   const apiKey = request.headers["x-api-key"];
   const bearer =
@@ -205,5 +214,8 @@ async function forward(reply: FastifyReply, url: string, reason: string, service
   } catch (e) {
     throw new ApiError(503, reason, `${service} service unreachable: ${(e as Error).message}`);
   }
-  return reply.status(res.status).type("application/json").send(await res.text());
+  return reply
+    .status(res.status)
+    .type("application/json")
+    .send(await res.text());
 }

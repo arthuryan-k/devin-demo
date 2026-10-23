@@ -1,6 +1,7 @@
 package fixgw;
 
 /** The handful of FIX 4.4 tags this gateway knows about. */
+@SuppressWarnings("checkstyle:ConstantName")
 public interface Tags {
     int Account = 1;
     int AvgPx = 6;

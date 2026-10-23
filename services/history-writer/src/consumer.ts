@@ -34,7 +34,10 @@ export class HistoryConsumer {
   private refreshing: Promise<void> = Promise.resolve();
   private stopped = false;
 
-  constructor(private readonly writer: HistoryWriter, private readonly opts: ConsumerOptions) {
+  constructor(
+    private readonly writer: HistoryWriter,
+    private readonly opts: ConsumerOptions,
+  ) {
     this.kafka = new Kafka({
       clientId: opts.clientId ?? "history-writer",
       brokers: opts.brokers,

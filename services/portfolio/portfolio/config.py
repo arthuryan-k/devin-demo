@@ -1,5 +1,7 @@
 """Environment configuration shared by the portfolio and risk services."""
+
 import os
+
 
 def database_url() -> str:
     return os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/brokerage")

@@ -31,7 +31,15 @@ export function Watchlist({ selected, onSelect }: { selected: string; onSelect: 
   );
 }
 
-function WatchRow({ inst, selected, onSelect }: { inst: Instrument; selected: boolean; onSelect: (s: string) => void }) {
+function WatchRow({
+  inst,
+  selected,
+  onSelect,
+}: {
+  inst: Instrument;
+  selected: boolean;
+  onSelect: (s: string) => void;
+}) {
   const { store } = useWorkspace();
   const m = useMarket(store, inst.symbol);
   const chg = m.last != null && m.open != null ? m.last - m.open : null;

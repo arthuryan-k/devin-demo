@@ -4,6 +4,7 @@ Offsets live in ``portfolio.consumer_offsets`` and are advanced in the same tran
 crash or redelivery never double-applies a batch. On partition assignment the consumer seeks to the stored offset.
 Per-symbol ordering comes from the topic partition (the engine is the single writer of each symbol's topic).
 """
+
 from __future__ import annotations
 
 import logging
@@ -54,13 +55,15 @@ class SettlementConsumer:
         self._pool = pool
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._consumer = Consumer({
-            "bootstrap.servers": bootstrap or config.kafka_bootstrap(),
-            "group.id": group_id,
-            "enable.auto.commit": False,
-            "auto.offset.reset": "earliest",
-            "topic.metadata.refresh.interval.ms": 5000,
-        })
+        self._consumer = Consumer(
+            {
+                "bootstrap.servers": bootstrap or config.kafka_bootstrap(),
+                "group.id": group_id,
+                "enable.auto.commit": False,
+                "auto.offset.reset": "earliest",
+                "topic.metadata.refresh.interval.ms": 5000,
+            }
+        )
 
     def _on_assign(self, consumer, partitions) -> None:
         offsets = stored_offsets(self._pool)
@@ -85,7 +88,7 @@ class SettlementConsumer:
             self._consumer.close()
 
     def _process_with_retry(self, msg) -> None:
-        for attempt in range(5):
+        for _attempt in range(5):
             try:
                 process(self._pool, msg.topic(), msg.partition(), msg.offset(), msg.value())
                 return
@@ -93,7 +96,7 @@ class SettlementConsumer:
                 log.info("retrying %s[%s]@%s after lock conflict", msg.topic(), msg.partition(), msg.offset())
         raise RuntimeError(f"could not settle {msg.topic()}[{msg.partition()}]@{msg.offset()}")
 
-    def start(self) -> "SettlementConsumer":
+    def start(self) -> SettlementConsumer:
         self._thread = threading.Thread(target=self.run, name="settlement-consumer", daemon=True)
         self._thread.start()
         return self

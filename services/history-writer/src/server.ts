@@ -8,7 +8,10 @@ const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
 }
-const brokers = (process.env.KAFKA_BROKERS ?? "localhost:9092").split(",").map((b) => b.trim()).filter(Boolean);
+const brokers = (process.env.KAFKA_BROKERS ?? "localhost:9092")
+  .split(",")
+  .map((b) => b.trim())
+  .filter(Boolean);
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 8083);
 const pool = new pg.Pool({ connectionString: databaseUrl, max: Number(process.env.PG_POOL_MAX ?? 4) });

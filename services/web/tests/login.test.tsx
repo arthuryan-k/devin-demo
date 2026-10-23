@@ -60,11 +60,16 @@ describe("login", () => {
     const s = await b.login("bob", "pw");
     expect(s).toEqual({ token: "jwt-123", username: "bob", participantId: 1042, accountId: "42" });
     expect(await b.instruments()).toEqual([{ symbol: "ACME", name: "Acme Corp", tickSize: 0.01, lotSize: 1 }]);
-    expect(new HttpBackend({ fetchImpl: fetchImpl as unknown as typeof fetch }).restoreSession()?.token).toBe("jwt-123");
+    expect(new HttpBackend({ fetchImpl: fetchImpl as unknown as typeof fetch }).restoreSession()?.token).toBe(
+      "jwt-123",
+    );
   });
 
   it("maps a 401 from the gateway to a login error", async () => {
-    const fetchImpl = async () => new Response(JSON.stringify({ error: "invalid_credentials", message: "Invalid username or password" }), { status: 401 });
+    const fetchImpl = async () =>
+      new Response(JSON.stringify({ error: "invalid_credentials", message: "Invalid username or password" }), {
+        status: 401,
+      });
     const b = new HttpBackend({ fetchImpl: fetchImpl as unknown as typeof fetch });
     await expect(b.login("x", "y")).rejects.toMatchObject({ status: 401, message: "Invalid username or password" });
     await waitFor(() => expect(b.restoreSession()).toBeNull());

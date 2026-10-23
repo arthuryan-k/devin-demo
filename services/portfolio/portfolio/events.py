@@ -5,6 +5,7 @@ with ``seq``/``symbol`` alongside it is also accepted. Event objects carry a ``t
 ``Event`` records (``OrderPlaced``, ``OrderRejected``, ``OrderCancelled``, ``OrderAmended``, ``TradeExecuted``) and
 their fields in camelCase; a trade may be nested under ``"trade"`` or flattened.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,7 @@ class Batch:
 def _kind(raw: dict) -> str:
     kind = str(raw.get("type") or raw.get("event") or "")
     kind = "".join(ch for ch in kind.lower() if ch.isalnum())
-    return kind[len("order"):] if kind.startswith("order") else kind
+    return kind[len("order") :] if kind.startswith("order") else kind
 
 
 def _get(raw: dict, *names: str):
@@ -41,23 +42,30 @@ def decode_event(raw: dict) -> EngineEvent | None:
     if kind == "rejected":
         return Rejected(int(order_id), str(_get(raw, "reason") or ""))
     if kind == "cancelled":
-        return Cancelled(int(order_id), int(_get(raw, "cancelledQty", "cancelled_qty", "qty")),
-                         str(_get(raw, "reason") or "REQUESTED"))
+        return Cancelled(
+            int(order_id),
+            int(_get(raw, "cancelledQty", "cancelled_qty", "qty")),
+            str(_get(raw, "reason") or "REQUESTED"),
+        )
     if kind == "amended":
         return Amended(int(order_id), int(_get(raw, "newPrice", "new_price")), int(_get(raw, "newQty", "new_qty")))
     if kind in ("tradeexecuted", "trade"):
         t = raw.get("trade") if isinstance(raw.get("trade"), dict) else raw
-        return Trade(int(_get(t, "makerOrderId", "maker_order_id")), int(_get(t, "takerOrderId", "taker_order_id")),
-                     int(_get(t, "price")), int(_get(t, "qty", "quantity")))
+        return Trade(
+            int(_get(t, "makerOrderId", "maker_order_id")),
+            int(_get(t, "takerOrderId", "taker_order_id")),
+            int(_get(t, "price")),
+            int(_get(t, "qty", "quantity")),
+        )
     return None
 
 
 def decode(value: bytes | str | dict, topic: str | None = None) -> Batch:
-    msg = json.loads(value) if isinstance(value, (bytes, str)) else value
+    msg = json.loads(value) if isinstance(value, bytes | str) else value
     raw_events = msg["events"] if isinstance(msg.get("events"), list) else [msg]
     symbol = msg.get("symbol")
     if symbol is None and topic and topic.startswith("events."):
-        symbol = topic[len("events."):]
+        symbol = topic[len("events.") :]
     seq = msg.get("seq")
     decoded = [e for e in (decode_event(r) for r in raw_events) if e is not None]
     return Batch(symbol, int(seq) if seq is not None else None, decoded)

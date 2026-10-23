@@ -27,14 +27,16 @@ export function QuoteHeader({ symbol }: { symbol: string }) {
       <div className="qh-stats">
         <Stat label="Bid" value={`${fmtPrice(m.bestBid)} × ${fmtQty(bidSize)}`} cls="bid" />
         <Stat label="Ask" value={`${fmtPrice(m.bestAsk)} × ${fmtQty(askSize)}`} cls="ask" />
-        <Stat
-          label="Spread"
-          value={m.bestBid != null && m.bestAsk != null ? fmtPrice(m.bestAsk - m.bestBid) : "—"}
-        />
+        <Stat label="Spread" value={m.bestBid != null && m.bestAsk != null ? fmtPrice(m.bestAsk - m.bestBid) : "—"} />
         <Stat label="High" value={fmtPrice(m.high)} />
         <Stat label="Low" value={fmtPrice(m.low)} />
         <Stat label="Volume" value={fmtVolume(m.volume)} />
-        <Stat label="Feed" value={m.status.toUpperCase()} cls={m.status === "live" ? "pos" : "warn"} testId="feed-status" />
+        <Stat
+          label="Feed"
+          value={m.status.toUpperCase()}
+          cls={m.status === "live" ? "pos" : "warn"}
+          testId="feed-status"
+        />
       </div>
     </div>
   );

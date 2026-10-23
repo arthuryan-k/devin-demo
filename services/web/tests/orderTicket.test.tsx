@@ -31,7 +31,10 @@ async function setup(symbol = "ACME") {
   return { ...r, backend, user: userEvent.setup() };
 }
 
-async function enter(user: ReturnType<typeof userEvent.setup>, fields: { qty?: string; price?: string; type?: string; tif?: string; side?: string }) {
+async function enter(
+  user: ReturnType<typeof userEvent.setup>,
+  fields: { qty?: string; price?: string; type?: string; tif?: string; side?: string },
+) {
   if (fields.side) await user.click(screen.getByRole("button", { name: fields.side }));
   if (fields.type) await user.selectOptions(screen.getByLabelText("Order type"), fields.type);
   if (fields.tif) await user.selectOptions(screen.getByLabelText("Time in force"), fields.tif);
@@ -54,7 +57,9 @@ describe("order ticket + portfolio", () => {
     await enter(user, { qty: "10", price: px });
     await user.click(screen.getByRole("button", { name: "Buy ACME" }));
     await waitFor(() => expect(notices.at(-1)).toMatch(/BUY 10 ACME LMT .* GTC: NEW/));
-    expect(screen.getByTestId("pf-reserved")).toHaveTextContent((Number(px) * 10).toLocaleString("en-US", { minimumFractionDigits: 2 }));
+    expect(screen.getByTestId("pf-reserved")).toHaveTextContent(
+      (Number(px) * 10).toLocaleString("en-US", { minimumFractionDigits: 2 }),
+    );
     expect(screen.getByTestId("live-orders")).toHaveTextContent(px);
   });
 

@@ -4,6 +4,7 @@ The gateway calls it before publishing a command to ``commands.<symbol>``. Each 
 transaction against the portfolio ledger (shared cash row locked ``FOR UPDATE``, then the symbol's position), so the
 reservation is atomic with the portfolio state and concurrent orders from one account cannot over-commit it.
 """
+
 from __future__ import annotations
 
 import logging
@@ -13,10 +14,9 @@ from typing import Literal
 
 import psycopg
 from fastapi import FastAPI, Request
-from pydantic import AliasChoices, BaseModel, Field, model_validator
-
 from portfolio import ledger
 from portfolio.db import open_pool, transaction
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 log = logging.getLogger("risk")
 
@@ -24,6 +24,7 @@ log = logging.getLogger("risk")
 class Target(BaseModel):
     """Whose ledger: ``participantId`` (the id the engine stamps on orders); ``accountId`` is accepted when it is
     the only one sent. The ledger is keyed by participant id, not by auth-service's ``accounts.id``."""
+
     participantId: int | None = None
     accountId: int | None = None
     symbol: str
@@ -115,15 +116,27 @@ def create_app(pool=None) -> FastAPI:
     @app.post("/v1/orders/check")
     @app.post("/v1/check", include_in_schema=False)
     def check_order(body: OrderCheckIn, request: Request):
-        req = ledger.OrderCheck(body.owner, body.symbol, body.orderId, body.side, body.type, body.tif, body.qty,
-                                body.price, body.referencePrice)
+        req = ledger.OrderCheck(
+            body.owner,
+            body.symbol,
+            body.orderId,
+            body.side,
+            body.type,
+            body.tif,
+            body.qty,
+            body.price,
+            body.referencePrice,
+        )
         return _run(request.app.state.pool, body.orderId, lambda conn: ledger.check_order(conn, req))
 
     @app.post("/v1/orders/check-amend")
     @app.post("/v1/check-amend", include_in_schema=False)
     def check_amend(body: AmendCheckIn, request: Request):
-        return _run(request.app.state.pool, body.orderId, lambda conn: ledger.check_amend(
-            conn, body.owner, body.symbol, body.orderId, body.newPrice, body.newQty))
+        return _run(
+            request.app.state.pool,
+            body.orderId,
+            lambda conn: ledger.check_amend(conn, body.owner, body.symbol, body.orderId, body.newPrice, body.newQty),
+        )
 
     @app.post("/v1/orders/check-cancel")
     @app.post("/v1/check-cancel", include_in_schema=False)
@@ -138,8 +151,11 @@ def create_app(pool=None) -> FastAPI:
     @app.post("/v1/orders/release")
     @app.post("/v1/release", include_in_schema=False)
     def release(body: ReleaseIn, request: Request):
-        return _run(request.app.state.pool, body.orderId, lambda conn: ledger.release(
-            conn, body.owner, body.symbol, body.orderId, body.kind))
+        return _run(
+            request.app.state.pool,
+            body.orderId,
+            lambda conn: ledger.release(conn, body.owner, body.symbol, body.orderId, body.kind),
+        )
 
     return app
 

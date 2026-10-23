@@ -1,0 +1,14 @@
+line-length = 120
+target-version = "py312"
+extend-exclude = [".venv"]
+
+[lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "PT", "N"]
+# camelCase fields mirror the wire contract; Reject/Unavailable predate the Error-suffix convention.
+ignore = ["N815", "N818"]
+
+[format]
+quote-style = "double"
+
+[lint.per-file-ignores]
+"tests/**" = ["PT018"]

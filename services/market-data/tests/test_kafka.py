@@ -56,8 +56,17 @@ async def test_consumes_replays_and_resyncs_from_kafka():
         await send({"type": "delta", "seq": 4, "levels": [["r", "S", 10100, 0, 0]], "events": []})
         await until(lambda: feed.gaps >= 2)
         assert not feed.ready
-        await send({"type": "snapshot", "seq": 4, "reason": "engine", "bids": [[10000, 1, 1]], "asks": [],
-                    "trades": [], "events": []})
+        await send(
+            {
+                "type": "snapshot",
+                "seq": 4,
+                "reason": "engine",
+                "bids": [[10000, 1, 1]],
+                "asks": [],
+                "trades": [],
+                "events": [],
+            }
+        )
         await until(lambda: feed.ready and feed.seq == 4)
         resync = await asyncio.wait_for(sub.queue.get(), 5)
         assert (resync["type"], resync["reason"], resync["seq"]) == ("snapshot", "resync", 4)

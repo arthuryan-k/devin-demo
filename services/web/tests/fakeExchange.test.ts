@@ -16,15 +16,26 @@ describe("mock exchange (Pages build)", () => {
       ex.step("NVTA");
       if (i % 25 === 0) {
         try {
-          ex.place(acct, { symbol: "NVTA", side: i % 50 ? "BUY" : "SELL", type: "LIMIT", timeInForce: "GTC", price: m.last / 100, qty: 3 });
+          ex.place(acct, {
+            symbol: "NVTA",
+            side: i % 50 ? "BUY" : "SELL",
+            type: "LIMIT",
+            timeInForce: "GTC",
+            price: m.last / 100,
+            qty: 3,
+          });
         } catch {
           /* risk rejections are fine here */
         }
       }
     }
     for (const msg of msgs) expect(replica.apply(msg).kind).toBe("delta");
-    expect(replica.levels("B")).toEqual(m.snapshot("resync").bids.map(([price, qty, orders]) => ({ price, qty, orders })));
-    expect(replica.levels("S")).toEqual(m.snapshot("resync").asks.map(([price, qty, orders]) => ({ price, qty, orders })));
+    expect(replica.levels("B")).toEqual(
+      m.snapshot("resync").bids.map(([price, qty, orders]) => ({ price, qty, orders })),
+    );
+    expect(replica.levels("S")).toEqual(
+      m.snapshot("resync").asks.map(([price, qty, orders]) => ({ price, qty, orders })),
+    );
     expect(replica.best("B")!).toBeLessThan(replica.best("S")!);
   });
 
@@ -36,7 +47,14 @@ describe("mock exchange (Pages build)", () => {
       const s = i % 2 ? "ACME" : "GLOBX";
       const m = ex.market(s);
       try {
-        ex.place(a, { symbol: s, side: i % 3 ? "BUY" : "SELL", type: i % 7 ? "LIMIT" : "MARKET", timeInForce: "GTC", price: (m.last + (i % 5) - 2) / 100, qty: 1 + (i % 9) });
+        ex.place(a, {
+          symbol: s,
+          side: i % 3 ? "BUY" : "SELL",
+          type: i % 7 ? "LIMIT" : "MARKET",
+          timeInForce: "GTC",
+          price: (m.last + (i % 5) - 2) / 100,
+          qty: 1 + (i % 9),
+        });
       } catch {
         /* rejected by risk */
       }

@@ -12,7 +12,9 @@ import org.junit.jupiter.api.Test;
 
 class FixGatewayTest {
 
-    static final long ALICE = 101, BOB = 202, CAROL = 303;
+    static final long ALICE = 101;
+    static final long BOB = 202;
+    static final long CAROL = 303;
     static final Map<String, Long> KEYS = Map.of("key-alice", ALICE, "key-bob", BOB, "key-carol", CAROL);
 
     ToyEngine engine;

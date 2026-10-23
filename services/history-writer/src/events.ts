@@ -129,7 +129,8 @@ function extra(e: Record<string, unknown>): Record<string, unknown> {
   if (e.type === "OrderAmended") {
     out.oldPriceTicks = optionalPrice(e.oldPrice, "oldPrice")?.toString() ?? null;
     out.oldQty = optionalInt(e.oldQty, "oldQty")?.toString() ?? null;
-    if (e.priorityRetained !== undefined) out.priorityRetained = e.priorityRetained === true || e.priorityRetained === "true";
+    if (e.priorityRetained !== undefined)
+      out.priorityRetained = e.priorityRetained === true || e.priorityRetained === "true";
   }
   if (e.seqNum !== undefined) out.bookSeqNum = String(e.seqNum);
   return out;

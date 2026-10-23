@@ -15,21 +15,64 @@ beforeAll(async () => {
   app = await buildApi(pool);
   const writer = new HistoryWriter(pool);
   const at = (ms: number) => new Date(1792670000000 + ms);
-  await writer.write(toRows({
-    symbol: "NVTA", seq: 0, participantId: 2001,
-    events: [{ type: "OrderPlaced", orderId: 1, side: "SELL", orderType: "LIMIT", timeInForce: "GTC", price: 5000, qty: 10 }],
-  }, "NVTA", at(0)));
-  await writer.write(toRows({
-    symbol: "NVTA", seq: 1, participantId: 2002,
-    events: [
-      { type: "OrderPlaced", orderId: 2, side: "BUY", orderType: "LIMIT", timeInForce: "IOC", price: 5000, qty: 4 },
-      { type: "TradeExecuted", makerOrderId: 1, takerOrderId: 2, makerParticipantId: 2001, takerParticipantId: 2002, takerSide: "BUY", price: 5000, qty: 4 },
-    ],
-  }, "NVTA", at(1000)));
-  await writer.write(toRows({
-    symbol: "NVTA", seq: 2, participantId: 2001,
-    events: [{ type: "OrderCancelled", orderId: 1, cancelledQty: 6, reason: "USER_REQUESTED" }],
-  }, "NVTA", at(2000)));
+  await writer.write(
+    toRows(
+      {
+        symbol: "NVTA",
+        seq: 0,
+        participantId: 2001,
+        events: [
+          {
+            type: "OrderPlaced",
+            orderId: 1,
+            side: "SELL",
+            orderType: "LIMIT",
+            timeInForce: "GTC",
+            price: 5000,
+            qty: 10,
+          },
+        ],
+      },
+      "NVTA",
+      at(0),
+    ),
+  );
+  await writer.write(
+    toRows(
+      {
+        symbol: "NVTA",
+        seq: 1,
+        participantId: 2002,
+        events: [
+          { type: "OrderPlaced", orderId: 2, side: "BUY", orderType: "LIMIT", timeInForce: "IOC", price: 5000, qty: 4 },
+          {
+            type: "TradeExecuted",
+            makerOrderId: 1,
+            takerOrderId: 2,
+            makerParticipantId: 2001,
+            takerParticipantId: 2002,
+            takerSide: "BUY",
+            price: 5000,
+            qty: 4,
+          },
+        ],
+      },
+      "NVTA",
+      at(1000),
+    ),
+  );
+  await writer.write(
+    toRows(
+      {
+        symbol: "NVTA",
+        seq: 2,
+        participantId: 2001,
+        events: [{ type: "OrderCancelled", orderId: 1, cancelledQty: 6, reason: "USER_REQUESTED" }],
+      },
+      "NVTA",
+      at(2000),
+    ),
+  );
 });
 afterAll(async () => {
   await app?.close();
@@ -46,8 +89,19 @@ describe("history read API", () => {
     const { orders } = res.json();
     expect(orders.map((o: { eventType: string }) => o.eventType)).toEqual(["CANCELLED", "PLACED"]);
     expect(orders[1]).toEqual({
-      symbol: "NVTA", seq: 0, eventIndex: 0, orderId: 1, participantId: 2001, eventType: "PLACED", side: "SELL",
-      orderType: "LIMIT", timeInForce: "GTC", priceTicks: 5000, qty: 10, reason: null, details: {},
+      symbol: "NVTA",
+      seq: 0,
+      eventIndex: 0,
+      orderId: 1,
+      participantId: 2001,
+      eventType: "PLACED",
+      side: "SELL",
+      orderType: "LIMIT",
+      timeInForce: "GTC",
+      priceTicks: 5000,
+      qty: 10,
+      reason: null,
+      details: {},
       eventTime: iso(0),
     });
   });
@@ -55,11 +109,21 @@ describe("history read API", () => {
   it("returns trades where the participant is maker or taker", async () => {
     for (const pid of [2001, 2002]) {
       const { trades } = (await get(`/v1/trades?participantId=${pid}`)).json();
-      expect(trades).toEqual([{
-        symbol: "NVTA", seq: 1, eventIndex: 1, makerOrderId: 1, takerOrderId: 2, makerParticipantId: 2001,
-        takerParticipantId: 2002, aggressorSide: "BUY", priceTicks: 5000, qty: 4,
-        eventTime: iso(1000),
-      }]);
+      expect(trades).toEqual([
+        {
+          symbol: "NVTA",
+          seq: 1,
+          eventIndex: 1,
+          makerOrderId: 1,
+          takerOrderId: 2,
+          makerParticipantId: 2001,
+          takerParticipantId: 2002,
+          aggressorSide: "BUY",
+          priceTicks: 5000,
+          qty: 4,
+          eventTime: iso(1000),
+        },
+      ]);
     }
     expect((await get("/v1/trades?participantId=2003")).json()).toEqual({ trades: [] });
   });
@@ -73,8 +137,12 @@ describe("history read API", () => {
 
   it("rejects unscoped or malformed queries with 400", async () => {
     for (const url of [
-      "/v1/orders", "/v1/trades", "/v1/orders?participantId=abc", "/v1/trades?participantId=0",
-      "/v1/orders?participantId=1&symbol=bad sym", "/v1/orders?participantId=1&limit=5000",
+      "/v1/orders",
+      "/v1/trades",
+      "/v1/orders?participantId=abc",
+      "/v1/trades?participantId=0",
+      "/v1/orders?participantId=1&symbol=bad sym",
+      "/v1/orders?participantId=1&limit=5000",
     ]) {
       const res = await get(url);
       expect(res.statusCode, url).toBe(400);

@@ -22,7 +22,10 @@ export function TimeAndSales({ symbol }: { symbol: string }) {
           </thead>
           <tbody>
             {m.trades.map((t) => (
-              <tr key={t.id} className={`${t.side === "BUY" ? "bid" : t.side === "SELL" ? "ask" : ""} ${t.mine ? "mine" : ""}`}>
+              <tr
+                key={t.id}
+                className={`${t.side === "BUY" ? "bid" : t.side === "SELL" ? "ask" : ""} ${t.mine ? "mine" : ""}`}
+              >
                 <td className="l dim">{fmtTime(t.time)}</td>
                 <td className="num">{fmtPrice(t.price)}</td>
                 <td className="num">{fmtQty(t.qty)}</td>

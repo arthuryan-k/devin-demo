@@ -112,7 +112,10 @@ class SymbolMarket {
   snapshot(reason: "connect" | "resync"): WireSnapshot {
     const v = [...this.view().entries()];
     const side = (s: "B" | "S", desc: boolean) =>
-      v.filter(([k]) => k[0] === s).map(([, l]) => l).sort((a, b) => (desc ? b[0] - a[0] : a[0] - b[0]));
+      v
+        .filter(([k]) => k[0] === s)
+        .map(([, l]) => l)
+        .sort((a, b) => (desc ? b[0] - a[0] : a[0] - b[0]));
     return {
       type: "snapshot",
       symbol: this.symbol,
@@ -231,7 +234,10 @@ export class FakeExchange {
     this.rand = mulberry32(opts.seed ?? 20261022);
     this.now = opts.now ?? Date.now;
     for (const inst of INSTRUMENTS) {
-      this.markets.set(inst.symbol, new SymbolMarket(inst.symbol, MARKET_PARAMS[inst.symbol], mulberry32(this.rand() * 2 ** 32)));
+      this.markets.set(
+        inst.symbol,
+        new SymbolMarket(inst.symbol, MARKET_PARAMS[inst.symbol], mulberry32(this.rand() * 2 ** 32)),
+      );
     }
   }
 
@@ -327,22 +333,46 @@ export class FakeExchange {
   place(a: Account, req: OrderRequest): OrderResult {
     const m = this.market(req.symbol);
     const qty = req.qty;
-    if (!Number.isInteger(qty) || qty <= 0) throw new ApiError(400, "INVALID_QTY", "Quantity must be a positive integer");
+    if (!Number.isInteger(qty) || qty <= 0)
+      throw new ApiError(400, "INVALID_QTY", "Quantity must be a positive integer");
     let price: number | null = null;
     if (req.type === "LIMIT") {
-      if (req.price == null || !(req.price > 0)) throw new ApiError(400, "INVALID_PRICE", "Limit price must be positive");
+      if (req.price == null || !(req.price > 0))
+        throw new ApiError(400, "INVALID_PRICE", "Limit price must be positive");
       price = Math.round(req.price * 100);
-      if (Math.abs(price - req.price * 100) > 1e-6) throw new ApiError(400, "INVALID_PRICE", "Price is off the 0.01 tick grid");
+      if (Math.abs(price - req.price * 100) > 1e-6)
+        throw new ApiError(400, "INVALID_PRICE", "Price is off the 0.01 tick grid");
     }
     const id = this.nextOrderId++;
     const now = this.now();
     const order: UserOrder = {
-      id, symbol: req.symbol, side: req.side, type: req.type, tif: req.type === "MARKET" ? "IOC" : req.timeInForce,
-      price, remaining: qty, filled: 0, original: qty, reservedCents: 0, fillCents: 0, createdAt: now, account: a,
+      id,
+      symbol: req.symbol,
+      side: req.side,
+      type: req.type,
+      tif: req.type === "MARKET" ? "IOC" : req.timeInForce,
+      price,
+      remaining: qty,
+      filled: 0,
+      original: qty,
+      reservedCents: 0,
+      fillCents: 0,
+      createdAt: now,
+      account: a,
     };
     a.history.set(id, {
-      orderId: id, symbol: req.symbol, side: req.side, type: req.type, timeInForce: req.timeInForce, price: req.price ?? null,
-      qty, filledQty: 0, avgFillPrice: null, status: "NEW", createdAt: now, updatedAt: now,
+      orderId: id,
+      symbol: req.symbol,
+      side: req.side,
+      type: req.type,
+      timeInForce: req.timeInForce,
+      price: req.price ?? null,
+      qty,
+      filledQty: 0,
+      avgFillPrice: null,
+      status: "NEW",
+      createdAt: now,
+      updatedAt: now,
     });
 
     const reject = (reason: string, message: string): never => {
@@ -352,13 +382,20 @@ export class FakeExchange {
     };
     const pos = a.position(req.symbol);
     if (req.side === "SELL" && qty > pos.qty - pos.reserved) {
-      reject("INSUFFICIENT_SHARES", `Only ${pos.qty - pos.reserved} ${req.symbol} available to sell (no short selling)`);
+      reject(
+        "INSUFFICIENT_SHARES",
+        `Only ${pos.qty - pos.reserved} ${req.symbol} available to sell (no short selling)`,
+      );
     }
     const available = a.cash - a.reservedCash;
     if (req.side === "BUY") {
       const need = price != null ? price * qty : this.sweepCost(m, "BUY", qty);
       if (need == null) reject("NO_LIQUIDITY", "No liquidity for a market order");
-      if (need! > available) reject("INSUFFICIENT_FUNDS", `Order needs ${(need! / 100).toFixed(2)}, available ${(available / 100).toFixed(2)}`);
+      if (need! > available)
+        reject(
+          "INSUFFICIENT_FUNDS",
+          `Order needs ${(need! / 100).toFixed(2)}, available ${(available / 100).toFixed(2)}`,
+        );
       order.reservedCents = need!;
       a.reservedCash += need!;
     } else {
@@ -395,15 +432,18 @@ export class FakeExchange {
     const m = this.market(o.symbol);
     const newPrice = change.price != null ? Math.round(change.price * 100) : o.price!;
     const newQty = change.qty ?? o.remaining;
-    if (!(newPrice > 0) || !Number.isInteger(newQty) || newQty <= 0) throw new ApiError(400, "INVALID_AMEND", "Price and quantity must be positive");
+    if (!(newPrice > 0) || !Number.isInteger(newQty) || newQty <= 0)
+      throw new ApiError(400, "INVALID_AMEND", "Price and quantity must be positive");
     const pos = a.position(o.symbol);
     if (o.side === "BUY") {
       const need = newPrice * newQty - o.reservedCents;
-      if (need > a.cash - a.reservedCash) throw new ApiError(422, "INSUFFICIENT_FUNDS", "Not enough cash for the amended order");
+      if (need > a.cash - a.reservedCash)
+        throw new ApiError(422, "INSUFFICIENT_FUNDS", "Not enough cash for the amended order");
       a.reservedCash += need;
       o.reservedCents += need;
     } else {
-      if (newQty - o.remaining > pos.qty - pos.reserved) throw new ApiError(422, "INSUFFICIENT_SHARES", "Not enough shares for the amended order");
+      if (newQty - o.remaining > pos.qty - pos.reserved)
+        throw new ApiError(422, "INSUFFICIENT_SHARES", "Not enough shares for the amended order");
       pos.reserved += newQty - o.remaining;
     }
     m.begin();
@@ -443,7 +483,9 @@ export class FakeExchange {
 
   private oppositeLevels(m: SymbolMarket, side: Side): [number, Liquidity][] {
     const book = side === "BUY" ? m.asks : m.bids;
-    return [...book.entries()].filter(([, l]) => l.qty > 0).sort((x, y) => (side === "BUY" ? x[0] - y[0] : y[0] - x[0]));
+    return [...book.entries()]
+      .filter(([, l]) => l.qty > 0)
+      .sort((x, y) => (side === "BUY" ? x[0] - y[0] : y[0] - x[0]));
   }
 
   private crossableQty(m: SymbolMarket, o: UserOrder): number {
@@ -502,7 +544,13 @@ export class FakeExchange {
       pos.costCents = pos.qty === 0 ? 0 : pos.costCents - costOut;
     }
     a.trades.unshift({
-      tradeId: `T${this.nextTradeId++}`, orderId: o.id, symbol: o.symbol, side: o.side, price: price / 100, qty, liquidity,
+      tradeId: `T${this.nextTradeId++}`,
+      orderId: o.id,
+      symbol: o.symbol,
+      side: o.side,
+      price: price / 100,
+      qty,
+      liquidity,
       time: this.now(),
     });
     this.updateHistory(o, o.remaining === 0 ? "FILLED" : "PARTIALLY_FILLED");
@@ -530,7 +578,9 @@ export class FakeExchange {
     const h = o.account.history.get(o.id);
     if (!h) return;
     Object.assign(h, fields, {
-      status, filledQty: o.filled, avgFillPrice: o.filled > 0 ? Number((o.fillCents / o.filled / 100).toFixed(4)) : null,
+      status,
+      filledQty: o.filled,
+      avgFillPrice: o.filled > 0 ? Number((o.fillCents / o.filled / 100).toFixed(4)) : null,
       updatedAt: this.now(),
     });
     if (reason) h.reason = reason;
@@ -644,17 +694,80 @@ function seedDemoHistory(a: Account, now: number, tradeId: () => number): void {
       const t = now - (3 - i) * day - (j + 1) * 3_600_000;
       const orderId = id++;
       a.history.set(orderId, {
-        orderId, symbol: p.symbol, side: "BUY", type: "LIMIT", timeInForce: "GTC", price: prices[j] / 100, qty: q, filledQty: q,
-        avgFillPrice: prices[j] / 100, status: "FILLED", createdAt: t - 40_000, updatedAt: t,
+        orderId,
+        symbol: p.symbol,
+        side: "BUY",
+        type: "LIMIT",
+        timeInForce: "GTC",
+        price: prices[j] / 100,
+        qty: q,
+        filledQty: q,
+        avgFillPrice: prices[j] / 100,
+        status: "FILLED",
+        createdAt: t - 40_000,
+        updatedAt: t,
       });
-      a.trades.push({ tradeId: `T${tradeId()}`, orderId, symbol: p.symbol, side: "BUY", price: prices[j] / 100, qty: q, liquidity: j ? "TAKER" : "MAKER", time: t });
+      a.trades.push({
+        tradeId: `T${tradeId()}`,
+        orderId,
+        symbol: p.symbol,
+        side: "BUY",
+        price: prices[j] / 100,
+        qty: q,
+        liquidity: j ? "TAKER" : "MAKER",
+        time: t,
+      });
     });
   }
   const extra: Omit<OrderHistoryRow, "orderId" | "createdAt" | "updatedAt">[] = [
-    { symbol: "INITD", side: "BUY", type: "LIMIT", timeInForce: "GTC", price: 18.2, qty: 300, filledQty: 0, avgFillPrice: null, status: "CANCELLED", reason: "USER_REQUEST" },
-    { symbol: "GLOBX", side: "SELL", type: "LIMIT", timeInForce: "IOC", price: 44.9, qty: 100, filledQty: 0, avgFillPrice: null, status: "CANCELLED", reason: "IOC_REMAINDER" },
-    { symbol: "NVTA", side: "BUY", type: "LIMIT", timeInForce: "FOK", price: 224.0, qty: 50, filledQty: 0, avgFillPrice: null, status: "REJECTED", reason: "FOK_NOT_FILLABLE" },
-    { symbol: "ACME", side: "BUY", type: "MARKET", timeInForce: "IOC", price: null, qty: 500000, filledQty: 0, avgFillPrice: null, status: "REJECTED", reason: "INSUFFICIENT_FUNDS" },
+    {
+      symbol: "INITD",
+      side: "BUY",
+      type: "LIMIT",
+      timeInForce: "GTC",
+      price: 18.2,
+      qty: 300,
+      filledQty: 0,
+      avgFillPrice: null,
+      status: "CANCELLED",
+      reason: "USER_REQUEST",
+    },
+    {
+      symbol: "GLOBX",
+      side: "SELL",
+      type: "LIMIT",
+      timeInForce: "IOC",
+      price: 44.9,
+      qty: 100,
+      filledQty: 0,
+      avgFillPrice: null,
+      status: "CANCELLED",
+      reason: "IOC_REMAINDER",
+    },
+    {
+      symbol: "NVTA",
+      side: "BUY",
+      type: "LIMIT",
+      timeInForce: "FOK",
+      price: 224.0,
+      qty: 50,
+      filledQty: 0,
+      avgFillPrice: null,
+      status: "REJECTED",
+      reason: "FOK_NOT_FILLABLE",
+    },
+    {
+      symbol: "ACME",
+      side: "BUY",
+      type: "MARKET",
+      timeInForce: "IOC",
+      price: null,
+      qty: 500000,
+      filledQty: 0,
+      avgFillPrice: null,
+      status: "REJECTED",
+      reason: "INSUFFICIENT_FUNDS",
+    },
   ];
   extra.forEach((e, i) => {
     const t = now - day - i * 5_400_000;

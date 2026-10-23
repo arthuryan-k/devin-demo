@@ -11,7 +11,9 @@ import type { MarketDataMessage } from "../src/marketdata/wire";
 export const SESSION: Session = { token: "t", username: "demo", participantId: 1001, accountId: "DU1" };
 
 /** Wraps a backend so tests can push market-data messages by hand (a fake WebSocket feed). */
-export function withManualFeed(base: Backend): Backend & { push(symbol: string, msg: MarketDataMessage): void; resyncs: string[] } {
+export function withManualFeed(
+  base: Backend,
+): Backend & { push(symbol: string, msg: MarketDataMessage): void; resyncs: string[] } {
   const handlers = new Map<string, MarketFeedHandlers>();
   const resyncs: string[] = [];
   return Object.assign(Object.create(base) as Backend, {

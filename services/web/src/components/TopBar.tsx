@@ -44,7 +44,13 @@ export function TopBar({
       <nav className="topnav" aria-label="Main" role="tablist">
         {NAV.map(({ id, label }) =>
           id ? (
-            <button key={label} role="tab" aria-selected={view === id} className={view === id ? "active" : ""} onClick={() => onView(id)}>
+            <button
+              key={label}
+              role="tab"
+              aria-selected={view === id}
+              className={view === id ? "active" : ""}
+              onClick={() => onView(id)}
+            >
               {label}
             </button>
           ) : (

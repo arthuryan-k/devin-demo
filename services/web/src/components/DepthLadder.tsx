@@ -41,7 +41,12 @@ export function DepthLadder({
   const mid = m.bestAsk != null && m.bestBid != null ? (m.bestAsk + m.bestBid) / 2 : null;
 
   return (
-    <Panel title={`Book Depth · ${symbol}`} className="depth" testId="order-book" actions={<span className="dim">seq {m.seq < 0 ? "—" : m.seq}</span>}>
+    <Panel
+      title={`Book Depth · ${symbol}`}
+      className="depth"
+      testId="order-book"
+      actions={<span className="dim">seq {m.seq < 0 ? "—" : m.seq}</span>}
+    >
       <table className="grid ladder">
         <thead>
           <tr>
@@ -57,7 +62,12 @@ export function DepthLadder({
             .map((l, i) => ({ l, c: askCum[i] }))
             .reverse()
             .map(({ l, c }) => (
-              <tr key={`a${l.price}`} className="ask-row clickable" data-testid="ask-level" onClick={() => onPickPrice(l.price, "BUY")}>
+              <tr
+                key={`a${l.price}`}
+                className="ask-row clickable"
+                data-testid="ask-level"
+                onClick={() => onPickPrice(l.price, "BUY")}
+              >
                 <td className="num mine-size">{fmtMine(mine.get(`S:${l.price.toFixed(2)}`))}</td>
                 <td />
                 <td className="c price ask">{fmtPrice(l.price)}</td>
@@ -70,11 +80,18 @@ export function DepthLadder({
             ))}
           <tr className="spread-row">
             <td colSpan={5}>
-              {mid == null ? "Waiting for quotes…" : `Mid ${mid.toFixed(3)} · Spread ${fmtPrice(spread)} · Last ${fmtPrice(m.last)}`}
+              {mid == null
+                ? "Waiting for quotes…"
+                : `Mid ${mid.toFixed(3)} · Spread ${fmtPrice(spread)} · Last ${fmtPrice(m.last)}`}
             </td>
           </tr>
           {bids.map((l, i) => (
-            <tr key={`b${l.price}`} className="bid-row clickable" data-testid="bid-level" onClick={() => onPickPrice(l.price, "SELL")}>
+            <tr
+              key={`b${l.price}`}
+              className="bid-row clickable"
+              data-testid="bid-level"
+              onClick={() => onPickPrice(l.price, "SELL")}
+            >
               <td className="num mine-size">{fmtMine(mine.get(`B:${l.price.toFixed(2)}`))}</td>
               <td className="num bar-cell">
                 <span className="bar bid-bar" style={{ width: `${(bidCum[i] / max) * 100}%` }} />

@@ -22,10 +22,14 @@ async function fakeAuthService(): Promise<{ server: FastifyInstance; url: string
     return { token: "jwt-alice", tokenType: "Bearer", account: { participantId: ALICE.participantId } };
   });
   server.post("/participants/register", async (req, reply) =>
-    reply.status(201).send({ participantId: 2001, label: `${(req.body as { name: string }).name}-2001`, apiKey: "ob_x" }),
+    reply
+      .status(201)
+      .send({ participantId: 2001, label: `${(req.body as { name: string }).name}-2001`, apiKey: "ob_x" }),
   );
   server.get("/auth/me", async (req, reply) =>
-    req.headers.cookie?.includes("ob_session=jwt-alice") ? { user: { username: "alice" } } : reply.status(401).send({ error: "unauthorized" }),
+    req.headers.cookie?.includes("ob_session=jwt-alice")
+      ? { user: { username: "alice" } }
+      : reply.status(401).send({ error: "unauthorized" }),
   );
   server.get("/internal/api-keys/verify", async () => ({ participantId: 1 }));
   const url = await server.listen({ port: 0, host: "127.0.0.1" });
@@ -43,11 +47,23 @@ describe("edge routing to auth-service", () => {
     const auth = await fakeAuthService();
     const h = await harness();
     const app = await buildApp({ orders: h.orders, auth: h.auth, symbols: h.symbols, authServiceUrl: auth.url });
-    cleanup.push(() => auth.server.close(), () => app.close(), () => h.app.close());
+    cleanup.push(
+      () => auth.server.close(),
+      () => app.close(),
+      () => h.app.close(),
+    );
 
-    const bad = await app.inject({ method: "POST", url: "/api/auth/login", payload: { username: "alice", password: "nope" } });
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "alice", password: "nope" },
+    });
     expect(bad.statusCode).toBe(401);
-    const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { username: "alice", password: "pw" } });
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "alice", password: "pw" },
+    });
     expect(login.statusCode).toBe(200);
     expect(login.headers["set-cookie"]).toContain("ob_session=jwt-alice");
     expect(login.json().token).toBe("jwt-alice");
@@ -64,7 +80,12 @@ describe("edge routing to auth-service", () => {
     expect(order.statusCode).toBe(200);
     expect(JSON.parse(h.bus.records("commands.ACME")[0]!.value).participantId).toBe(ALICE.participantId);
 
-    const reg = await app.inject({ method: "POST", url: "/participants/register", payload: "name=mm", headers: { "content-type": "application/x-www-form-urlencoded" } });
+    const reg = await app.inject({
+      method: "POST",
+      url: "/participants/register",
+      payload: "name=mm",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
     expect(reg.statusCode).toBe(201);
     expect(reg.json().label).toBe("mm-2001");
 
@@ -85,11 +106,24 @@ describe("upstream proxies", () => {
     });
     const url = await upstream.listen({ port: 0, host: "127.0.0.1" });
     const h = await harness();
-    const app = await buildApp({ orders: h.orders, auth: h.auth, symbols: h.symbols, upstreams: { "/api/reference": `${url}/`, "/api/portfolio": `${url}/v1/accounts` } });
-    cleanup.push(() => upstream.close(), () => app.close(), () => h.app.close());
+    const app = await buildApp({
+      orders: h.orders,
+      auth: h.auth,
+      symbols: h.symbols,
+      upstreams: { "/api/reference": `${url}/`, "/api/portfolio": `${url}/v1/accounts` },
+    });
+    cleanup.push(
+      () => upstream.close(),
+      () => app.close(),
+      () => h.app.close(),
+    );
 
     expect((await app.inject({ method: "GET", url: "/api/reference/symbols" })).statusCode).toBe(401);
-    expect((await app.inject({ method: "GET", url: "/api/reference/symbols", headers: { "x-api-key": "key-alice" } })).json()).toEqual({ ok: true });
+    expect(
+      (
+        await app.inject({ method: "GET", url: "/api/reference/symbols", headers: { "x-api-key": "key-alice" } })
+      ).json(),
+    ).toEqual({ ok: true });
     await app.inject({ method: "GET", url: "/api/portfolio/1001", headers: { "x-api-key": "key-alice" } });
     expect(seen).toEqual([
       { url: "/symbols", pid: String(ALICE.participantId) },
@@ -105,9 +139,15 @@ describe("portfolio BFF route", () => {
     const url = await portfolio.listen({ port: 0, host: "127.0.0.1" });
     const h = await harness();
     const app = await buildApp({ orders: h.orders, auth: h.auth, symbols: h.symbols, portfolioUrl: url });
-    cleanup.push(() => portfolio.close(), () => app.close(), () => h.app.close());
+    cleanup.push(
+      () => portfolio.close(),
+      () => app.close(),
+      () => h.app.close(),
+    );
     expect((await app.inject({ method: "GET", url: "/api/portfolio" })).statusCode).toBe(401);
-    expect((await app.inject({ method: "GET", url: "/api/portfolio", headers: { "x-api-key": "key-alice" } })).json()).toEqual({ accountId: ALICE.participantId });
+    expect(
+      (await app.inject({ method: "GET", url: "/api/portfolio", headers: { "x-api-key": "key-alice" } })).json(),
+    ).toEqual({ accountId: ALICE.participantId });
   });
 });
 
@@ -122,9 +162,17 @@ describe("history BFF routes", () => {
     const url = await history.listen({ port: 0, host: "127.0.0.1" });
     const h = await harness();
     const app = await buildApp({ orders: h.orders, auth: h.auth, symbols: h.symbols, historyUrl: url });
-    cleanup.push(() => history.close(), () => app.close(), () => h.app.close());
+    cleanup.push(
+      () => history.close(),
+      () => app.close(),
+      () => h.app.close(),
+    );
     expect((await app.inject({ method: "GET", url: "/api/history/orders" })).statusCode).toBe(401);
-    const res = await app.inject({ method: "GET", url: "/api/history/trades?symbol=ACME&limit=5&participantId=999", headers: { "x-api-key": "key-alice" } });
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/history/trades?symbol=ACME&limit=5&participantId=999",
+      headers: { "x-api-key": "key-alice" },
+    });
     expect(res.json()).toEqual({ trades: [] });
     await app.inject({ method: "GET", url: "/api/history/orders", headers: { "x-api-key": "key-alice" } });
     expect(seen).toEqual([

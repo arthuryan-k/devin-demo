@@ -10,13 +10,21 @@ beforeAll(async () => {
 afterAll(() => h.close());
 
 async function session() {
-  const res = await h.app.inject({ method: "POST", url: "/auth/signup", payload: { username: uniqueName(), password: "pass-word-1" } });
+  const res = await h.app.inject({
+    method: "POST",
+    url: "/auth/signup",
+    payload: { username: uniqueName(), password: "pass-word-1" },
+  });
   const body = res.json();
   return { ...body, auth: { authorization: `Bearer ${body.token}` } };
 }
 
 const verify = (key?: string) =>
-  h.app.inject({ method: "GET", url: "/internal/api-keys/verify", headers: key === undefined ? {} : { "x-api-key": key } });
+  h.app.inject({
+    method: "GET",
+    url: "/internal/api-keys/verify",
+    headers: key === undefined ? {} : { "x-api-key": key },
+  });
 
 describe("API keys", () => {
   it("issues a key once, stores only its hash, and resolves it to the participant", async () => {
@@ -25,18 +33,29 @@ describe("API keys", () => {
     expect(res.statusCode).toBe(201);
     const issued = res.json();
     expect(issued.apiKey).toMatch(/^ob_[0-9a-f]{48}$/);
-    expect(issued).toMatchObject({ participantId: s.account.participantId, label: "bot", prefix: issued.apiKey.slice(0, 11) });
+    expect(issued).toMatchObject({
+      participantId: s.account.participantId,
+      label: "bot",
+      prefix: issued.apiKey.slice(0, 11),
+    });
 
     const stored = await h.pool.query("SELECT key_hash, key_prefix FROM api_keys WHERE id = $1", [issued.id]);
     expect(Buffer.compare(stored.rows[0].key_hash, hashApiKey(issued.apiKey))).toBe(0);
-    const leaked = await h.pool.query("SELECT count(*)::int AS n FROM api_keys WHERE key_prefix = $1 OR label = $1", [issued.apiKey]);
+    const leaked = await h.pool.query("SELECT count(*)::int AS n FROM api_keys WHERE key_prefix = $1 OR label = $1", [
+      issued.apiKey,
+    ]);
     expect(leaked.rows[0].n).toBe(0);
 
     const lookup = await verify(issued.apiKey);
     expect(lookup.statusCode).toBe(200);
     expect(lookup.json()).toEqual({
-      keyId: issued.id, participantId: s.account.participantId, accountId: s.account.id, userId: s.user.id,
-      username: s.user.username, label: s.account.label, kind: "human",
+      keyId: issued.id,
+      participantId: s.account.participantId,
+      accountId: s.account.id,
+      userId: s.user.id,
+      username: s.user.username,
+      label: s.account.label,
+      kind: "human",
     });
 
     const list = (await h.app.inject({ method: "GET", url: "/api-keys", headers: s.auth })).json();
@@ -52,9 +71,13 @@ describe("API keys", () => {
     const s = await session();
     const issued = (await h.app.inject({ method: "POST", url: "/api-keys", headers: s.auth })).json();
     expect((await verify(issued.apiKey)).statusCode).toBe(200);
-    expect((await h.app.inject({ method: "DELETE", url: `/api-keys/${issued.id}`, headers: s.auth })).statusCode).toBe(204);
+    expect((await h.app.inject({ method: "DELETE", url: `/api-keys/${issued.id}`, headers: s.auth })).statusCode).toBe(
+      204,
+    );
     expect((await verify(issued.apiKey)).statusCode).toBe(401);
-    expect((await h.app.inject({ method: "DELETE", url: `/api-keys/${issued.id}`, headers: s.auth })).statusCode).toBe(404);
+    expect((await h.app.inject({ method: "DELETE", url: `/api-keys/${issued.id}`, headers: s.auth })).statusCode).toBe(
+      404,
+    );
   });
 
   it("requires a session to issue, list or revoke keys, and keys are scoped to their account", async () => {
@@ -63,7 +86,9 @@ describe("API keys", () => {
     const alice = await session();
     const bob = await session();
     const key = (await h.app.inject({ method: "POST", url: "/api-keys", headers: alice.auth })).json();
-    expect((await h.app.inject({ method: "DELETE", url: `/api-keys/${key.id}`, headers: bob.auth })).statusCode).toBe(404);
+    expect((await h.app.inject({ method: "DELETE", url: `/api-keys/${key.id}`, headers: bob.auth })).statusCode).toBe(
+      404,
+    );
     expect((await verify(key.apiKey)).json().participantId).toBe(alice.account.participantId);
   });
 });
@@ -71,7 +96,10 @@ describe("API keys", () => {
 describe("participant registration", () => {
   it("creates a simulated user, account and key per participant (form-encoded, like the old endpoint)", async () => {
     const res = await h.app.inject({
-      method: "POST", url: "/participants/register", payload: "name=maker", headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+      url: "/participants/register",
+      payload: "name=maker",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
     });
     expect(res.statusCode).toBe(201);
     const reg = res.json();
@@ -80,15 +108,21 @@ describe("participant registration", () => {
     const lookup = (await verify(reg.apiKey)).json();
     expect(lookup).toMatchObject({ participantId: reg.participantId, accountId: reg.accountId, kind: "simulated" });
 
-    const other = (await h.app.inject({ method: "POST", url: "/participants/register", payload: { name: "maker" } })).json();
+    const other = (
+      await h.app.inject({ method: "POST", url: "/participants/register", payload: { name: "maker" } })
+    ).json();
     expect(other.participantId).not.toBe(reg.participantId);
     expect(other.accountId).not.toBe(reg.accountId);
   });
 
   it("sanitizes names and reserves YOU/anon", async () => {
-    const reg = (await h.app.inject({ method: "POST", url: "/participants/register", payload: { name: "YOU" } })).json();
+    const reg = (
+      await h.app.inject({ method: "POST", url: "/participants/register", payload: { name: "YOU" } })
+    ).json();
     expect(reg.label).toBe(`P-${reg.participantId}`);
-    const odd = (await h.app.inject({ method: "POST", url: "/participants/register", payload: { name: "a b/c!" } })).json();
+    const odd = (
+      await h.app.inject({ method: "POST", url: "/participants/register", payload: { name: "a b/c!" } })
+    ).json();
     expect(odd.label).toBe(`abc-${odd.participantId}`);
   });
 
@@ -106,7 +140,11 @@ describe("internal token", () => {
     try {
       const reg = (await guarded.app.inject({ method: "POST", url: "/participants/register", payload: {} })).json();
       const call = (headers: Record<string, string>) =>
-        guarded.app.inject({ method: "GET", url: "/internal/api-keys/verify", headers: { "x-api-key": reg.apiKey, ...headers } });
+        guarded.app.inject({
+          method: "GET",
+          url: "/internal/api-keys/verify",
+          headers: { "x-api-key": reg.apiKey, ...headers },
+        });
       expect((await call({})).statusCode).toBe(403);
       expect((await call({ "x-internal-token": "nope" })).statusCode).toBe(403);
       expect((await call({ "x-internal-token": "s3cr3t" })).statusCode).toBe(200);
