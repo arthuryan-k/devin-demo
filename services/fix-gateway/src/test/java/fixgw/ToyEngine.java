@@ -1,6 +1,7 @@
 package fixgw;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -40,7 +41,7 @@ class ToyEngine implements OrderBus {
 
     private void emit(long participantId, EngineEvent e) {
         e.participantId = participantId;
-        for (Listener l : new ArrayList<>(listeners.getOrDefault(participantId, List.of()))) l.onEvent(e);
+        for (Listener l : new ArrayList<>(listeners.getOrDefault(participantId, Collections.<Listener>emptyList()))) l.onEvent(e);
     }
 
     private static EngineEvent ev(String type, Resting r, long price, long qty) {

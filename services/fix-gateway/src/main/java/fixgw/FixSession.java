@@ -250,7 +250,7 @@ public class FixSession implements Runnable, OrderBus.Listener {
             o.price = price;
             o.qty = qty;
             orders.put(clOrdId, o);
-            ordersById.put(Long.valueOf(c.orderId), o);
+            ordersById.put(new Long(c.orderId), o);
         }
         bus.publish(c);
     }
@@ -356,7 +356,7 @@ public class FixSession implements Runnable, OrderBus.Listener {
         if (o == null) return; // someone else's order flow for this participant (e.g. their REST orders)
         if (EngineEvent.ACCEPTED.equals(e.type)) {
             o.orderId = e.orderId;
-            ordersById.put(Long.valueOf(e.orderId), o);
+            ordersById.put(new Long(e.orderId), o);
             o.status = "0";
             send(execReport(o, "0", 0, 0));
         } else if (EngineEvent.REJECTED.equals(e.type)) {
@@ -476,6 +476,8 @@ public class FixSession implements Runnable, OrderBus.Listener {
         out.flush();
     }
 
+    // TODO: SimpleDateFormat isn't thread-safe, so this allocates one per message. Move to a shared formatter once
+    // we're off Java 8 and can use java.time.
     private static String now() {
         SimpleDateFormat f = new SimpleDateFormat("yyyyMMdd-HH:mm:ss.SSS");
         f.setTimeZone(TimeZone.getTimeZone("UTC"));

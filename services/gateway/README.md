@@ -78,7 +78,7 @@ Error bodies are `{"error": "<message>", "reason": "<CODE>"}`.
 | `UPSTREAMS` | unset | extra authenticated proxies, `prefix=url`, comma-separated. A path on the URL replaces the prefix, e.g. `/api/reference=http://reference-data-service:8082/` serves `/api/reference/symbols` from `/symbols`. Upstreams receive `X-Participant-Id`/`X-Account-Id` |
 | `SYMBOLS` | all | restrict to a comma-separated subset |
 | `GATEWAY_INSTANCE` | `0` | 0–15, part of every order id. Must be unique per replica |
-| `RESPONSE_TIMEOUT_MS` | `5000` | |
+| `RESPONSE_TIMEOUT_MS` | `3000` | |
 | `LIMIT_MSGS_PER_SEC`, `LIMIT_BURST`, `LIMIT_MAX_OPEN_ORDERS`, `LIMIT_MAX_VIOLATIONS` | `200`, `400`, `100`, `100` | |
 
 ## Build, run, test

@@ -22,6 +22,7 @@ public class HttpRiskClient implements RiskClient {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
     }
 
+    // TODO: switch to java.net.http.HttpClient (keep-alive, async) - not available on Java 8.
     public Decision check(OrderCommand c) {
         String path;
         StringBuffer body = new StringBuffer();
