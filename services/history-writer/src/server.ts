@@ -1,25 +1,13 @@
 import pg from "pg";
 
 import { buildApi } from "./api.js";
+import { loadConfig } from "./config.js";
 import { HistoryConsumer } from "./consumer.js";
 import { HistoryWriter } from "./writer.js";
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  throw new Error("DATABASE_URL is required");
-}
-const brokers = (process.env.KAFKA_BROKERS ?? "localhost:9092")
-  .split(",")
-  .map((b) => b.trim())
-  .filter(Boolean);
-const host = process.env.HOST ?? "0.0.0.0";
-const port = Number(process.env.PORT ?? 8083);
-const pool = new pg.Pool({ connectionString: databaseUrl, max: Number(process.env.PG_POOL_MAX ?? 4) });
-const consumer = new HistoryConsumer(new HistoryWriter(pool), {
-  brokers,
-  groupId: process.env.KAFKA_GROUP_ID ?? "history-writer",
-  discoveryIntervalMs: Number(process.env.TOPIC_DISCOVERY_MS ?? 10_000),
-});
+const { databaseUrl, brokers, host, port, poolMax, groupId, discoveryIntervalMs } = loadConfig();
+const pool = new pg.Pool({ connectionString: databaseUrl, max: poolMax });
+const consumer = new HistoryConsumer(new HistoryWriter(pool), { brokers, groupId, discoveryIntervalMs });
 const api = await buildApi(pool);
 await api.listen({ host, port });
 console.log(`history-writer read API listening on ${host}:${port}`);

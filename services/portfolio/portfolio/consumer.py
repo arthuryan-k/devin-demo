@@ -17,6 +17,7 @@ from portfolio import config, events, ledger
 from portfolio.db import transaction
 
 log = logging.getLogger("portfolio.consumer")
+# TODO: tighten to ^events\.[A-Z][A-Z0-9]{0,9}$ like history-writer once the engine stops creating scratch topics
 TOPIC_PATTERN = "^events\\..*"
 
 
@@ -30,6 +31,7 @@ def process(pool: ConnectionPool, topic: str, partition: int, offset: int, value
         ).fetchone()
         if row is not None and offset < row["next_offset"]:
             return False
+        # FIXME: a symbol-less batch raises and wedges the partition; should go to a dead-letter table instead
         if batch.symbol is None:
             raise ValueError(f"message at {topic}[{partition}]@{offset} has no symbol")
         ledger.settle(conn, batch.symbol, batch.events, batch.seq)
@@ -61,11 +63,13 @@ class SettlementConsumer:
                 "group.id": group_id,
                 "enable.auto.commit": False,
                 "auto.offset.reset": "earliest",
+                # TODO: make configurable (KAFKA_METADATA_REFRESH_MS?) - 5s is fine for compose, too chatty for prod
                 "topic.metadata.refresh.interval.ms": 5000,
             }
         )
 
     def _on_assign(self, consumer, partitions) -> None:
+        # TODO: handle on_revoke; a rebalance mid-batch currently relies on the offset table to dedupe
         offsets = stored_offsets(self._pool)
         for p in partitions:
             if (p.topic, p.partition) in offsets:
@@ -80,14 +84,17 @@ class SettlementConsumer:
                 if msg is None:
                     continue
                 if msg.error():
+                    # FIXME: fatal errors (e.g. auth) are logged and spun on forever
                     log.warning("consumer error: %s", msg.error())
                     continue
                 self._process_with_retry(msg)
+                # XXX: async commit is only a hint, the real offset is in portfolio.consumer_offsets
                 self._consumer.commit(message=msg, asynchronous=True)
         finally:
             self._consumer.close()
 
     def _process_with_retry(self, msg) -> None:
+        # TODO: backoff between attempts, same as risk/api.py _run
         for _attempt in range(5):
             try:
                 process(self._pool, msg.topic(), msg.partition(), msg.offset(), msg.value())
@@ -104,6 +111,7 @@ class SettlementConsumer:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
+            # FIXME: 10s is arbitrary; poll() blocks 0.5s so this is usually enough
             self._thread.join(timeout=10)
 
 

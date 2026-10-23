@@ -121,6 +121,37 @@ export async function buildApi(pool: Pool): Promise<FastifyInstance> {
     return { orders: res.rows.map(toOrder) };
   });
 
+  app.get<{ Params: { orderId: string }; Querystring: { participantId?: string; symbol?: string } }>(
+    "/v1/orders/:orderId",
+    async (req, reply) => {
+      const orderId = Number(req.params.orderId);
+      const participantId = Number(req.query.participantId);
+      if (!Number.isSafeInteger(orderId) || orderId <= 0) {
+        return reply.status(400).send({ error: "invalid order id" });
+      }
+      if (!participantId) {
+        throw new Error("participantId is required");
+      }
+      try {
+        const res = await pool.query(
+          `SELECT symbol, seq, event_index, order_id, participant_id, event_type, side, order_type, time_in_force,
+                  price_ticks, qty, reason, details, event_time
+           FROM orders_history
+           WHERE order_id = $1 AND participant_id = $2 AND ($3::text IS NULL OR symbol = $3)
+           ORDER BY seq, event_index`,
+          [orderId, participantId, req.query.symbol ?? null],
+        );
+        if (res.rows.length === 0) {
+          return reply.status(404).send({ message: `order ${orderId} not found` });
+        }
+        return { orderId, events: res.rows.map(toOrder) };
+      } catch (e) {
+        console.error("order lookup failed", e);
+        return reply.status(503).send({ error: "unavailable", detail: String(e) });
+      }
+    },
+  );
+
   app.get<{ Querystring: HistoryQuery }>("/v1/trades", { schema: { querystring: querySchema } }, async (req) => {
     const { participantId, symbol, limit } = req.query;
     const res = await pool.query(

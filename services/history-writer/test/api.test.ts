@@ -150,3 +150,24 @@ describe("history read API", () => {
     }
   });
 });
+
+describe("single order lookup", () => {
+  it("returns an order's lifecycle, scoped to its owner", async () => {
+    const res = await get("/v1/orders/1?participantId=2001&symbol=NVTA");
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.orderId).toBe(1);
+    expect(body.events[0]).toMatchObject({ symbol: "NVTA", orderId: 1, eventType: "PLACED", side: "SELL" });
+    expect((await get("/v1/orders/1?participantId=2002")).statusCode).toBe(404);
+  });
+
+  it("rejects bad ids", async () => {
+    const res = await get("/v1/orders/abc?participantId=2001");
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBeTruthy();
+  });
+
+  it("requires a participant", async () => {
+    expect((await get("/v1/orders/1")).statusCode).toBeGreaterThanOrEqual(400);
+  });
+});

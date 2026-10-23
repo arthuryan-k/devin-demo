@@ -61,3 +61,14 @@ def test_hub_ignores_unknown_topics_and_garbage():
     hub.ingest("marketdata.ACME", b"not json", offset=3)
     assert hub.feed("acme").seq is None
     assert hub.feed("NOPE") is None
+
+
+def test_feed_settles_quickly():
+    import time
+
+    hub = FeedHub([("ACME", "0.01")])
+    started = time.monotonic()
+    hub.ingest("marketdata.ACME", json.dumps({"type": "snapshot", "seq": 0, "bids": [], "asks": []}))
+    time.sleep(0.05)
+    assert time.monotonic() - started < 2
+    assert hub.feed("ACME") is not None
