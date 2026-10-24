@@ -16,7 +16,7 @@
         <maven.compiler.release>8</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <junit.version>5.9.3</junit.version>
-        <kafka.version>3.4.1</kafka.version>
+        <kafka.version>4.4.0</kafka.version>
         <jackson.version>2.13.5</jackson.version>
     </properties>
 
