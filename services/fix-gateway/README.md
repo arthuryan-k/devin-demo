@@ -5,7 +5,7 @@ with an API key, runs the same pre-trade risk check as the REST gateway, and pub
 `commands.<symbol>` topics, so a FIX client and a REST client trade in the same book. Written like the in-house
 gateways of the 2000s: thread per socket, raw collections, hand-rolled tag=value codec, no resend.
 
-**Stack:** Java 17 (written to Java 5 idioms), kafka-clients, Jackson. Tests: JUnit 5.
+**Stack:** Java 8 (written to Java 5 idioms), kafka-clients, Jackson. Tests: JUnit 5.
 
 ## Session
 

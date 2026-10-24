@@ -8,9 +8,16 @@ outside bot. The matching engine starts every book empty and never quotes; stop 
 
 ## What it does
 
-- **Personas** per symbol (ACME, GLOBX, INITD, NVTA), drawn by weight: market makers (~58%) quote around a hidden
-  reference price and skew by inventory; aggressive takers (~19%) cross the spread with informed-flow bias toward the
-  drift; maintenance traders (~19%) amend and cancel; whales (~4%) sweep the book and trigger volatility shocks.
+- **Personas** per symbol (ACME, GLOBX, INITD, NVTA), drawn by weight:
+
+  | Persona | Share | Strategy |
+  | --- | --- | --- |
+  | Market maker | ~58% | Posts small GTC quotes on both sides near the reference price. It re-quotes as the price drifts and refills an empty side of the book. Its spread and readiness to leave depend on its risk tolerance. It shrinks its quotes on the side that would add to its inventory. |
+  | Aggressive taker | ~19% | Sends market and IOC orders, sometimes sweeping several levels. It follows recent drift, buying 55% of the time after the price rises and 45% after it falls. |
+  | Maintenance trader | ~19% | Keeps a few resting orders and cancels, resizes or reprices them. |
+  | Whale | ~4% | Occasionally sends a large market sweep, which triggers a volatility shock. |
+
+- **Order flow:** orders arrive as a Poisson process at an adjustable rate, spread over the symbols.
 - **Hidden reference price per symbol:** a random walk with drift and decaying volatility shocks.
 - **Churn:** participants join (with an entry ramp) and leave at random; a leaving participant cancels every resting
   order it owns. Population per symbol stays between ~half and twice the target.

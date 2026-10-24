@@ -268,12 +268,13 @@ tables, and the matching engine never touches the database: it stays an in-memor
 
 ```mermaid
 flowchart LR
-    browser["Browser / API clients"] -->|"signup, login, API keys"| auth["auth-service (TS, Fastify)"]
-    browser -->|"orders (X-Api-Key or ob_session JWT)"| engine["matching-engine (Java)"]
-    engine -->|"verify key / session, register"| auth
-    engine -->|"GET /symbols at startup"| refdata["reference-data-service (TS, Fastify)"]
-    engine -->|"events.<symbol>"| bus["Redpanda"]
-    bus --> writer["history-writer (TS, KafkaJS)"]
+    browser["Browser / API clients"] -->|"signup, login, API keys, orders"| gateway["gateway (TS, Fastify)"]
+    gateway -->|"JWKS, verify key, register"| auth["auth-service (TS, Fastify)"]
+    gateway -->|"GET /symbols"| refdata["reference-data-service (TS, Fastify)"]
+    gateway -->|"GET /v1/orders, /v1/trades"| writer["history-writer (TS, KafkaJS)"]
+    engine["matching-engine (Java)"] -->|"GET /symbols at startup"| refdata
+    engine -->|"events.SYM"| bus["Redpanda"]
+    bus --> writer
     auth --> pg[("Postgres")]
     refdata --> pg
     writer --> pg
@@ -456,7 +457,7 @@ sequenceDiagram
     participant E as "matching-engine"
     C->>G: "POST /api/orders (decimal price)"
     G->>A: "JWKS (cached) / GET /internal/api-keys/verify"
-    G->>G: "403 if blocked; token bucket + open orders (429)"
+    G->>G: "403 if blocked, token bucket + open orders (429)"
     G->>R: "POST /v1/orders/check (ticks)"
     R-->>G: "approved / RiskRejected"
     G->>B: "commands.SYMBOL {correlationId, orderId, ticks}"
@@ -565,3 +566,41 @@ flowchart LR
   Accounts and the session live in `localStorage`.
 - **Tests:** Vitest + Testing Library for components against `MockBackend` and a hand-driven feed fixture;
   Playwright drives the built Pages bundle in Chromium and asserts no external requests are made.
+
+## Running the stack locally
+
+`docker compose up --build` from the repository root builds and starts every service: Postgres with the Flyway
+migrations applied, Redpanda, the matching engine and all the services below. The simulator starts trading
+immediately, so the books fill within seconds.
+
+| Service | Host port | |
+|---|---|---|
+| gateway | `8080` | public REST API; WebSocket market data at `ws://localhost:8080/marketdata/<SYM>/ws` |
+| auth-service | `8081` | |
+| reference-data-service | `8082` | `GET /symbols` |
+| history-writer | `8083` | |
+| market-data | `8090` | |
+| portfolio | `8091` | |
+| risk | `8092` | |
+| simulator | `8095` | admin controls (`/admin/status`, `start`, `stop`, `rate`, `participants`, `reset`) |
+| fix-gateway | `9878` | FIX 4.4 acceptor |
+| Redpanda | `19092` | Kafka API for host clients |
+| Postgres | `5432` | database `brokerage` |
+
+Sign up and trade through the gateway with decimal prices:
+
+```
+TOKEN=$(curl -s localhost:8080/api/auth/signup -H 'content-type: application/json' \
+  -d '{"username":"alice","password":"correct-horse"}' | jq -r .token)
+curl -s localhost:8080/api/orders -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"symbol":"ACME","side":"BUY","price":"10.25","qty":3}'
+# {"orderId":...,"symbol":"ACME","seq":0,"events":[{"type":"OrderPlaced","price":"10.25","qty":3,...}]}
+```
+
+Inspect the database directly with
+`docker compose exec postgres psql -U brokerage -c 'select * from trades_history order by id desc limit 5'`, and
+drive the bus with `rpk` as shown in [Event bus: running it](#running-it). Point the workstation at the stack with
+`npm run dev` in `services/web/`. With the stack up, `python3 tests/e2e/test_sim_fix_e2e.py` checks the simulator's
+accounts and flow, its controls, and a FIX order filling against a REST order.
+
+Per-service builds and tests (`mvn verify`, `npm test`, `pytest`, `prove t/`) are in each service's README.
