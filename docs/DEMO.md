@@ -20,7 +20,7 @@
 
 | | Stage | Target | Where | Devin story |
 |---|---|---|---|---|
-| 01 | **Plan** (and Onboarding) | Onboard onto an unfamiliar codebase, then scope a net-new feature | Devin Wiki, Ask Devin | Onboard → understand → scope |
+| 01 | **Plan** (and Onboarding) | Onboard onto an unfamiliar codebase, then scope a net-new feature | DeepWiki, Ask Devin | Onboard → understand → scope |
 | 02 | **Build** | Implement that feature | Engine, bus schemas, gateway, workstation | Plan → code → PR |
 | 03 | **Secure** | Static-analysis security findings | `history-writer`, `auth-service`, `eod-recon` | Scan → find → fix |
 | 04 | **Fix** | Reporter-style bug tickets | GitHub Issues | Reproduce → root-cause → fix |
@@ -37,7 +37,7 @@
 
 | Focus | Detail |
 |---|---|
-| **Onboarding** | Get a new engineer productive on a dozen services in four languages: Devin Wiki for the architecture, service map and how the event bus ties them together |
+| **Onboarding** | Get a new engineer productive on a dozen services in four languages: DeepWiki for the architecture, service map and how the event bus ties them together |
 | **Target** | A net-new product feature that cuts across services, for example stop and stop-limit orders (the engine today accepts only limit and market orders) |
 | **How** | Ask Devin for the specifics: how an order travels from the gateway over the bus to the book, and every place that would have to change |
 | **Showcases** | Devin turns a one-line product ask into a scoped plan: affected services, contract changes, risks and a test strategy |
@@ -127,3 +127,16 @@ The same six stages, run on your code and your backlog.
 | Modernize | One legacy module migrated | Existing tests pass; behavior unchanged |
 
 Across all stages: share of Devin PRs merged, reviewer time per PR, and cost per merged PR against engineer hours.
+
+---
+
+## Security and deployment
+
+| Question | Answer |
+|---|---|
+| Does Devin merge its own changes? | It opens pull requests and is subject to the same branch protections and SDLC policies as any engineer; your engineers review and decide whether to merge. [Source](https://docs.devin.ai/essential-guidelines/sdlc-integration#working-within-existing-engineering-processes) |
+| Is our code used for training? | Not for Enterprise customers without express prior written consent. [Source](https://docs.devin.ai/admin/security) |
+| Where does it run? | Enterprise Cloud (Cognition-managed), or Customer Dedicated Deployment: a single-tenant VPC connected to your network over AWS PrivateLink or an IPSec tunnel. Customer-managed keys come with Enterprise Assured. [Source](https://docs.devin.ai/enterprise/deployment/overview) |
+| Certifications and encryption? | Cognition is SOC 2 Type II certified (since September 2024); data is encrypted in transit and at rest. [Source](https://docs.devin.ai/admin/security#third-party-audits-and-certification) |
+| What can it access? | Only the repositories you grant it. Secrets are encrypted at rest and can be scoped to the organization or to a single repository. [Source](https://docs.devin.ai/product-guides/secrets#repo-specific-secrets) |
+| Identity and audit? | Enterprise SSO over OIDC or SAML, custom roles mapped to IdP groups, and enterprise audit logs through the API. [Source](https://docs.devin.ai/enterprise/security-access/sso/guide#custom-roles) |
