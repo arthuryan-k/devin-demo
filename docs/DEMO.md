@@ -11,8 +11,8 @@
   ledger, market data, a simulated market and a React trading workstation.
 - A dozen services in Java, TypeScript, Python and Perl on a Kafka-compatible event bus, with Postgres, Docker
   Compose and gated CI.
-- The demo walks the whole software lifecycle: net-new feature work first, then targets planted at every later
-  stage, so Devin can be shown doing real engineering end to end on code it has not seen before.
+- The demo walks the whole software lifecycle: net-new feature work first, then a known target at each later stage.
+- Every change Devin makes arrives as a pull request; engineers review and merge.
 
 ---
 
@@ -33,11 +33,11 @@
 
 ## 01 · Plan (and Onboarding): learn the codebase, scope a new feature
 
-> **The pitch:** an unfamiliar, polyglot codebase, learned in minutes and turned into a scoped plan before anyone writes code.
+> **Outcome:** a written scope for a cross-service change, reviewed by an engineer before any code is written.
 
 | Focus | Detail |
 |---|---|
-| **Onboarding** | Get a new engineer (or the audience) productive on a dozen services in four languages: Devin Wiki for the architecture, service map and how the event bus ties them together |
+| **Onboarding** | Get a new engineer productive on a dozen services in four languages: Devin Wiki for the architecture, service map and how the event bus ties them together |
 | **Target** | A net-new product feature that cuts across services, for example stop and stop-limit orders (the engine today accepts only limit and market orders) |
 | **How** | Ask Devin for the specifics: how an order travels from the gateway over the bus to the book, and every place that would have to change |
 | **Showcases** | Devin turns a one-line product ask into a scoped plan: affected services, contract changes, risks and a test strategy |
@@ -48,7 +48,7 @@
 
 ## 02 · Build: code the feature
 
-> **The pitch:** the plan from stage 1, delivered as a reviewable PR that passes CI.
+> **Outcome:** one PR implementing the stage 1 scope, with tests and green CI.
 
 | Focus | Detail |
 |---|---|
@@ -61,13 +61,13 @@
 
 ## 03 · Secure: scan → find → fix
 
-> **The pitch:** scanner findings go from a report to merged fixes, across three languages.
+> **Outcome:** one fix PR per confirmed finding, each with a test, across three languages.
 
 | Focus | Detail |
 |---|---|
 | **Targets** | A SQL injection in `services/history-writer`; a timing-unsafe credential comparison in `services/auth-service`; an OS command injection in the legacy Perl/shell batch `services/eod-recon` |
 | **How they surface** | CodeQL ([`codeql.yml`](../.github/workflows/codeql.yml)) and the report-only scanners in [`security.yml`](../.github/workflows/security.yml) (npm audit, pip-audit, Semgrep), including the rule set for the Perl batch in [`.semgrep/legacy-batch.yml`](../.semgrep/legacy-batch.yml) |
-| **Showcases** | Devin reads scanner output, confirms each finding is real, and lands a tested fix PR per finding |
+| **Showcases** | Devin reads scanner output, confirms each finding is real, and opens a tested fix PR per finding |
 
 ---
 
@@ -75,7 +75,7 @@
 
 ## 04 · Fix: scope and fix bug tickets
 
-> **The pitch:** hand Devin a ticket the way you would hand it to a teammate.
+> **Outcome:** per ticket, a reproduction, a root cause and a fix PR with a regression test.
 
 | Focus | Detail |
 |---|---|
@@ -88,13 +88,13 @@
 
 ## 05 · Maintain: triage the backlog
 
-> **The pitch:** the backlog nobody wants to own, sorted, scoped and cleared.
+> **Outcome:** a prioritized update plan, PRs for the low-risk updates, and scoped tickets for the debt.
 
 | Focus | Detail |
 |---|---|
 | **Dependencies** | Deliberately downgraded dependency pins with known CVEs (for example `services/market-data/requirements.txt`), plus an open backlog of Dependabot update PRs across npm, pip, Maven, Docker and GitHub Actions ([`dependabot.yml`](../.github/dependabot.yml)) |
 | **Tech debt** | `TODO`, `FIXME` and `HACK` markers left across services, for example `services/portfolio/portfolio/consumer.py`, `services/eod-recon/bin/eod_recon.pl` and `services/fix-gateway` |
-| **Showcases** | Devin groups and prioritizes the updates (security vs. routine vs. breaking major versions), merges the safe ones with CI green, and turns the debt markers into scoped, prioritized tickets, leaving the risky calls to a human |
+| **Showcases** | Devin groups and prioritizes the updates (security vs. routine vs. breaking major versions), opens PRs for the low-risk ones with CI green, and turns the debt markers into scoped, prioritized tickets, leaving the risky calls to a human |
 
 ---
 
@@ -102,7 +102,7 @@
 
 ## 06 · Modernize: legacy migration (headline)
 
-> **The pitch:** a multi-file migration that teams postpone for years, planned and delivered as one reviewable PR.
+> **Outcome:** a migration plan, then the change as one reviewable PR, verified against existing tests and the running stack.
 
 | Focus | Detail |
 |---|---|
@@ -110,3 +110,20 @@
 | **Scope** | Modernize to Java 17 (or port to QuickFIX/J): about 16 source files, plus the build and its CI job |
 | **Smaller alternative** | Port the legacy Perl/shell `services/eod-recon` batch to a modern language, keeping its report and clearing-file formats |
 | **Showcases** | Devin plans, executes and verifies the migration against the existing tests and the running stack |
+
+---
+
+## From demo to PoC
+
+The same six stages, run on your code and your backlog.
+
+| Stage | PoC deliverable | Measured by |
+|---|---|---|
+| Plan | Scope for one real roadmap item | Engineer sign-off on the scope |
+| Build | That item, implemented | PR merged; review rounds; time to PR |
+| Secure | Fixes for open scanner findings | Findings closed; clean re-scan |
+| Fix | A set of real backlog bugs | Tickets closed with regression tests |
+| Maintain | Dependency and debt backlog triage | Updates merged; CVEs cleared |
+| Modernize | One legacy module migrated | Existing tests pass; behavior unchanged |
+
+Across all stages: share of Devin PRs merged, reviewer time per PR, and cost per merged PR against engineer hours.
