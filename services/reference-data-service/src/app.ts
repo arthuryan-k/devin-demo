@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import _ from "lodash";
 import type { Pool } from "pg";
 
 /** One listed instrument. Decimals are strings so no client parses money through a float. */
@@ -51,7 +52,9 @@ export async function buildApp(pool: Pool, options: Options = {}): Promise<Fasti
     const all = req.query.includeInactive === "true";
     const res = await pool.query(`${SELECT} ${all ? "" : "WHERE active"} ORDER BY display_order, symbol`);
     reply.header("Cache-Control", cacheControl);
-    return { symbols: res.rows.map(toInstrument) };
+    // Delisted instruments sort after the tradable ones so clients can render the list as it comes back.
+    const symbols = _.sortBy(res.rows.map(toInstrument), (i) => (i.active ? 0 : 1));
+    return { symbols };
   });
 
   app.get<{ Params: { symbol: string } }>("/symbols/:symbol", async (req, reply) => {

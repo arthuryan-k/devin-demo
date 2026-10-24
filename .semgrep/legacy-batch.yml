@@ -1,0 +1,56 @@
+rules:
+  - id: perl-system-string-interpolation
+    languages: [generic]
+    paths:
+      include: ["*.pl", "*.pm"]
+    severity: ERROR
+    message: >-
+      system() is called with a single interpolated string, so the command line goes through /bin/sh and any shell
+      metacharacters in the interpolated values are executed. Use the list form, system($prog, @args).
+    metadata:
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      category: security
+    pattern-either:
+      - pattern-regex: \bsystem\s*\(\s*"[^"]*\$[A-Za-z_{]
+      - pattern-regex: \bexec\s*\(\s*"[^"]*\$[A-Za-z_{]
+      - pattern-regex: '`[^`]*\$[A-Za-z_{][^`]*`'
+      - pattern-regex: \bopen\s*\(\s*[^,]+,\s*["']-?\|
+
+  - id: perl-path-from-argv-env
+    languages: [generic]
+    paths:
+      include: ["*.pl", "*.pm"]
+    severity: WARNING
+    message: >-
+      A file path is built from a command line argument or environment value without validating it; values containing
+      '../' or '/' can read or write outside the intended directory.
+    metadata:
+      cwe: "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+      category: security
+    pattern-regex: my\s+\$\w+\s*=\s*"\$\w+/\$\w+"\s*;
+
+  - id: sh-eval-variable
+    languages: [generic]
+    paths:
+      include: ["*.sh"]
+    severity: ERROR
+    message: >-
+      eval of a string containing a variable re-parses the value as shell code; anyone who controls the variable can
+      run arbitrary commands.
+    metadata:
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      category: security
+    pattern-regex: \beval\s+["']?[^#\n]*\$
+
+  - id: sh-variable-in-sql-heredoc
+    languages: [generic]
+    paths:
+      include: ["*.sh"]
+    severity: WARNING
+    message: >-
+      A shell variable is expanded inside a quoted SQL literal sent to psql; quotes in the value break out of the
+      literal (SQL injection). Pass it with psql -v and :'name' instead.
+    metadata:
+      cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+      category: security
+    pattern-regex: '''\$\{?[A-Za-z_]\w*\}?'''
