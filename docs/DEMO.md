@@ -29,7 +29,7 @@
 
 ---
 
-![Stage 1 of 6: Plan](assets/stage-1-plan.svg)
+![Stage 1 of 6: Plan](assets/sdlc-stage-1-plan.svg)
 
 ## 01 · Plan: scope a new feature
 
@@ -43,7 +43,7 @@
 
 ---
 
-![Stage 2 of 6: Build](assets/stage-2-build.svg)
+![Stage 2 of 6: Build](assets/sdlc-stage-2-build.svg)
 
 ## 02 · Build: code the feature
 
@@ -56,7 +56,7 @@
 
 ---
 
-![Stage 3 of 6: Secure](assets/stage-3-secure.svg)
+![Stage 3 of 6: Secure](assets/sdlc-stage-3-secure.svg)
 
 ## 03 · Secure: scan → find → fix
 
@@ -70,7 +70,7 @@
 
 ---
 
-![Stage 4 of 6: Fix](assets/stage-4-fix.svg)
+![Stage 4 of 6: Fix](assets/sdlc-stage-4-fix.svg)
 
 ## 04 · Fix: scope and fix bug tickets
 
@@ -83,7 +83,7 @@
 
 ---
 
-![Stage 5 of 6: Maintain](assets/stage-5-maintain.svg)
+![Stage 5 of 6: Maintain](assets/sdlc-stage-5-maintain.svg)
 
 ## 05 · Maintain: triage the backlog
 
@@ -97,7 +97,7 @@
 
 ---
 
-![Stage 6 of 6: Modernize](assets/stage-6-modernize.svg)
+![Stage 6 of 6: Modernize](assets/sdlc-stage-6-modernize.svg)
 
 ## 06 · Modernize: legacy migration (headline)
 
