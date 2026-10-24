@@ -9,7 +9,7 @@ RUN mvn -B -q dependency:go-offline
 COPY src ./src
 RUN mvn -B -q -o -DskipTests package dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/lib
 
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 RUN useradd --system --uid 10001 engine && mkdir -p /data/journal && chown engine /data/journal
 WORKDIR /app
 COPY --from=build /src/target/lib/ lib/
