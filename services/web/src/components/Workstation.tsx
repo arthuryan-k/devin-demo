@@ -37,7 +37,9 @@ export function Workstation({ notices, onLogout }: { notices: Notice[]; onLogout
           <ActivityPanel account={account} />
         </main>
       ) : view === "research" ? (
-        <main className="layout-research" data-testid="research-page"></main>
+        <main className="layout-research" data-testid="research-page">
+          <h1>Hello world!</h1>
+        </main>
       ) : (
         <main className="layout">
           <div className="col-left">
