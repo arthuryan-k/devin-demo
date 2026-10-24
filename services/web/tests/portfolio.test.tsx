@@ -88,7 +88,14 @@ describe("portfolio tab", () => {
     renderInWorkspace(<Workstation notices={[]} onLogout={() => {}} />, b);
     const tab = (name: string) => screen.getByRole("tab", { name });
     expect(tab("Trade")).toHaveAttribute("aria-selected", "true");
-    expect(tab("Research")).toBeDisabled();
+    expect(tab("Research")).toBeEnabled();
+    expect(tab("Reports")).toBeDisabled();
+    expect(screen.queryByTestId("portfolio-page")).toBeNull();
+    expect(screen.queryByTestId("research-page")).toBeNull();
+
+    fireEvent.click(tab("Research"));
+    expect(tab("Research")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("research-page")).toBeEmptyDOMElement();
     expect(screen.queryByTestId("portfolio-page")).toBeNull();
 
     fireEvent.click(tab("Portfolio"));
