@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { PortfolioPanel } from "../src/components/PortfolioPanel";
 import { MockBackend } from "../src/api/mock/mockBackend";
@@ -95,7 +95,9 @@ describe("portfolio tab", () => {
 
     fireEvent.click(tab("Research"));
     expect(tab("Research")).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByTestId("research-page")).toBeEmptyDOMElement();
+    expect(
+      within(screen.getByTestId("research-page")).getByRole("heading", { name: "Hello world!" }),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId("portfolio-page")).toBeNull();
 
     fireEvent.click(tab("Portfolio"));
