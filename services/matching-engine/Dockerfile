@@ -1,6 +1,6 @@
 # Standalone matching-engine service: consumes commands.<symbol>, publishes events.<symbol> and marketdata.<symbol>.
 # Build context: services/matching-engine. Optional MAVEN_MIRROR build arg, e.g. a Maven Central mirror URL.
-FROM maven:3.9-eclipse-temurin-17 AS build
+FROM maven:3.9-eclipse-temurin-26 AS build
 ARG MAVEN_MIRROR=
 WORKDIR /src
 RUN if [ -n "$MAVEN_MIRROR" ]; then mkdir -p /root/.m2 && printf '<settings><mirrors><mirror><id>mirror</id><url>%s</url><mirrorOf>central</mirrorOf></mirror></mirrors></settings>' "$MAVEN_MIRROR" > /root/.m2/settings.xml; fi
