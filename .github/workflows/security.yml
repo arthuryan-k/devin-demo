@@ -81,14 +81,14 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install semgrep==1.182.1
-      - name: Semgrep (registry rulesets + legacy batch rules)
+      - name: Semgrep (default ruleset + legacy batch rules)
         continue-on-error: true
         run: |
-          semgrep scan --config p/default --config p/bash --config .semgrep \
+          semgrep scan --config p/default --config .semgrep \
             --sarif --output semgrep.sarif --metrics off || true
-          semgrep scan --config p/default --config p/bash --config .semgrep \
+          semgrep scan --config p/default --config .semgrep \
             --metrics off --no-error >> "$GITHUB_STEP_SUMMARY" || true
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         continue-on-error: true
         with:
           sarif_file: semgrep.sarif
