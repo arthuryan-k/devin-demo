@@ -1,3 +1,4 @@
 fastapi==0.159.1
 uvicorn[standard]==0.54.0
 aiokafka==0.14.0
+h11==0.14.0

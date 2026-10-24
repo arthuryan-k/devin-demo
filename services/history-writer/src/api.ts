@@ -38,6 +38,7 @@ interface HistoryQuery {
   participantId: number;
   symbol?: string;
   limit: number;
+  sort?: string;
 }
 
 export const MAX_LIMIT = 1000;
@@ -49,6 +50,7 @@ const querySchema = {
     participantId: { type: "integer", minimum: 1 },
     symbol: { type: "string", pattern: "^[A-Z][A-Z0-9]{0,9}$" },
     limit: { type: "integer", minimum: 1, maximum: MAX_LIMIT, default: 100 },
+    sort: { type: "string" },
   },
   additionalProperties: false,
 } as const;
@@ -108,13 +110,14 @@ export async function buildApi(pool: Pool): Promise<FastifyInstance> {
   app.get("/healthz", async () => ({ status: "ok" }));
 
   app.get<{ Querystring: HistoryQuery }>("/v1/orders", { schema: { querystring: querySchema } }, async (req) => {
-    const { participantId, symbol, limit } = req.query;
+    const { participantId, symbol, limit, sort } = req.query;
+    const orderBy = sort ? `${sort}, seq DESC, event_index DESC` : "event_time DESC, seq DESC, event_index DESC";
     const res = await pool.query(
       `SELECT symbol, seq, event_index, order_id, participant_id, event_type, side, order_type, time_in_force,
               price_ticks, qty, reason, details, event_time
        FROM orders_history
        WHERE participant_id = $1 AND ($2::text IS NULL OR symbol = $2)
-       ORDER BY event_time DESC, seq DESC, event_index DESC
+       ORDER BY ${orderBy}
        LIMIT $3`,
       [participantId, symbol ?? null, limit],
     );

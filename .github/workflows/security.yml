@@ -1,0 +1,95 @@
+name: Security scan
+
+# Reporting only: every job is continue-on-error, so findings show up in the run summary and the Security tab
+# without gating pull requests. See .github/workflows/ci.yml for the gating build and test jobs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '41 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  npm-audit:
+    name: npm audit (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth-service, gateway, history-writer, reference-data-service, web]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: npm audit
+        continue-on-error: true
+        run: |
+          npm audit --audit-level=low | tee audit.txt
+          {
+            echo "### ${{ matrix.service }}"
+            echo '```'
+            cat audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pip-audit:
+    name: pip-audit (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [market-data, portfolio, risk]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pip-audit==2.10.1
+      - name: pip-audit
+        continue-on-error: true
+        run: |
+          pip-audit -r requirements.txt --progress-spinner off | tee audit.txt
+          {
+            echo "### ${{ matrix.service }}"
+            echo '```'
+            cat audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install semgrep==1.182.1
+      - name: Semgrep (registry rulesets + legacy batch rules)
+        continue-on-error: true
+        run: |
+          semgrep scan --config p/default --config p/bash --config .semgrep \
+            --sarif --output semgrep.sarif --metrics off || true
+          semgrep scan --config p/default --config p/bash --config .semgrep \
+            --metrics off --no-error >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep

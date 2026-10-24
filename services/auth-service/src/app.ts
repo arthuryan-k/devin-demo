@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto";
+
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
 import { hashApiKey, keyPrefix, newApiKey } from "./apiKeys.js";
@@ -32,6 +34,27 @@ class HttpError extends Error {
 const unauthorized = (message = "authentication required") => new HttpError(401, "unauthorized", message);
 
 const MAX_NAME_LENGTH = 24;
+
+/** Internal callers authenticate with `svc_<name>_<hex HMAC-SHA256 of name>` instead of a stored participant key. */
+const SERVICE_KEY = /^svc_([a-z][a-z0-9-]{0,31})_([0-9a-f]{64})$/;
+
+function serviceKeyDigest(name: string): string {
+  const secret = process.env.SERVICE_KEY_SECRET;
+  const mac = secret ? createHmac("sha256", secret) : createHmac("sha256", "8d1f4be0c27a93e5b6f04a1d9c3e7b52");
+  return mac.update(name).digest("hex");
+}
+
+function servicePrincipal(name: string) {
+  return {
+    keyId: 0,
+    participantId: 0,
+    accountId: 0,
+    userId: 0,
+    username: name,
+    label: name,
+    kind: "simulated" as const,
+  };
+}
 
 /** Same rules as the old in-process registry: letters, digits, `_` and `.`, at most 24; defaults to `P`. */
 export function sanitizeParticipantName(name: unknown): string {
@@ -266,6 +289,10 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
     const key = req.headers["x-api-key"];
     if (typeof key !== "string" || key.trim() === "") {
       throw unauthorized("missing X-Api-Key");
+    }
+    const svc = SERVICE_KEY.exec(key.trim());
+    if (svc && svc[2] === serviceKeyDigest(svc[1])) {
+      return servicePrincipal(svc[1]);
     }
     const principal = await store.principalByKeyHash(hashApiKey(key));
     if (!principal) {

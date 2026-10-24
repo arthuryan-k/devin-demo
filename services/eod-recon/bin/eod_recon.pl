@@ -17,6 +17,9 @@
 #
 # Return codes: 0 clean, 4 breaks found, 8 bad input / cannot write output.
 #
+# When EOD_ARCHIVE_DIR is set the report and clearing file are also copied into
+# <EOD_ARCHIVE_DIR>/<YYYYMMDD>/ for the overnight tape.
+#
 use strict;
 use warnings;
 
@@ -57,11 +60,9 @@ sub read_file {
 
 sub money {
     my $ticks = shift;
-    my $sign = $ticks < 0 ? '-' : '';
-    $ticks = -$ticks if $ticks < 0;
-    my $s = sprintf("%d.%02d", int($ticks / 100), $ticks % 100);
-    1 while $s =~ s/^(\d+)(\d{3})/$1,$2/;
-    return $sign . $s;
+    my $s = sprintf("%d.%02d", int($ticks / 100), abs($ticks) % 100);
+    1 while $s =~ s/^(-?\d+)(\d{3})/$1,$2/;
+    return $s;
 }
 
 sub brk {
@@ -229,6 +230,16 @@ sub process_day {
     }
     printf $cx "TRL%09d%018d%70s\n", $ndtl, $hash, '';
     close $cx;
+
+    if (my $arch = $ENV{EOD_ARCHIVE_DIR}) {
+        my $dest = "$arch/$BIZDATE";
+        system("mkdir -p $dest && cp $rpt $clr $dest/");
+        if ($? != 0) {
+            print STDERR "EOD0030W ARCHIVE TO $dest FAILED\n";
+        } else {
+            print "EOD0006I ARCHIVED $dest\n";
+        }
+    }
 
     print "EOD0003I ACCOUNTS=" . scalar(keys %ACCT) . " FILLS=" . scalar(@fills) . " TRADES=" . scalar(@trades)
         . " BREAKS=" . scalar(@BREAKS) . "\n";

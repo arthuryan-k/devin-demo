@@ -18,11 +18,13 @@
   },
   "dependencies": {
     "fastify": "^5.12.7",
+    "lodash": "4.17.20",
     "pg": "^8.23.1"
   },
   "devDependencies": {
     "@eslint/js": "~9.39.0",
     "@testcontainers/postgresql": "^12.2.1",
+    "@types/lodash": "^4.17.27",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.23.1",
     "eslint": "~9.39.0",
