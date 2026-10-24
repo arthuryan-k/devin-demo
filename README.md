@@ -9,6 +9,15 @@ simulator that supplies all the liquidity, and a React trading workstation on to
 
 ## What is this
 
+<p align="center">
+  <a href="https://arthuryan-k.github.io/devin-demo/">
+    <img src="docs/assets/trading-workstation.png" width="100%"
+         alt="The trading workstation: watchlist, portfolio, live price chart, L2 book depth, order entry and time and sales for ACME">
+  </a>
+  <br>
+  <sub><em>The trading workstation on the in-browser demo exchange: watchlist, portfolio, live chart, L2 depth, order entry and time &amp; sales.</em></sub>
+</p>
+
 A limit order book is the core of an exchange: buyers and sellers post orders at the prices they are willing to
 trade, and the matching engine pairs them up, best price first and, at the same price, first come first served.
 The matching engine hosts one order book per listed symbol (`ACME`, `GLOBX`, `INITD`, `NVTA`). Each book supports
