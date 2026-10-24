@@ -3,12 +3,12 @@ import type { AccountView } from "../api/types";
 import { useWorkspace } from "../context";
 import { fmtMoney, fmtSigned, pnlClass } from "../lib/format";
 
-export type View = "trade" | "portfolio";
+export type View = "trade" | "portfolio" | "research";
 
 const NAV: { id: View | null; label: string }[] = [
   { id: "trade", label: "Trade" },
   { id: "portfolio", label: "Portfolio" },
-  { id: null, label: "Research" },
+  { id: "research", label: "Research" },
   { id: null, label: "Reports" },
 ];
 
