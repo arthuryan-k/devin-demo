@@ -20,7 +20,7 @@
 
 | | Stage | Target | Where | Devin story |
 |---|---|---|---|---|
-| 01 | **Plan** | Scope a net-new feature | Devin Wiki, Ask Devin | Understand → scope → plan |
+| 01 | **Plan** (and Onboarding) | Onboard onto an unfamiliar codebase, then scope a net-new feature | Devin Wiki, Ask Devin | Onboard → understand → scope |
 | 02 | **Build** | Implement that feature | Engine, bus schemas, gateway, workstation | Plan → code → PR |
 | 03 | **Secure** | Static-analysis security findings | `history-writer`, `auth-service`, `eod-recon` | Scan → find → fix |
 | 04 | **Fix** | Reporter-style bug tickets | GitHub Issues | Reproduce → root-cause → fix |
@@ -31,14 +31,15 @@
 
 ![Stage 1 of 6: Plan](assets/sdlc-stage-1-plan.svg)
 
-## 01 · Plan: scope a new feature
+## 01 · Plan (and Onboarding): learn the codebase, scope a new feature
 
-> **The pitch:** an unfamiliar, polyglot codebase, understood and scoped in minutes, before anyone writes code.
+> **The pitch:** an unfamiliar, polyglot codebase, learned in minutes and turned into a scoped plan before anyone writes code.
 
 | Focus | Detail |
 |---|---|
+| **Onboarding** | Get a new engineer (or the audience) productive on a dozen services in four languages: Devin Wiki for the architecture, service map and how the event bus ties them together |
 | **Target** | A net-new product feature that cuts across services, for example stop and stop-limit orders (the engine today accepts only limit and market orders) |
-| **How** | Devin Wiki for the architecture and service map; Ask Devin for the specifics: how an order travels from the gateway over the bus to the book, and every place that would have to change |
+| **How** | Ask Devin for the specifics: how an order travels from the gateway over the bus to the book, and every place that would have to change |
 | **Showcases** | Devin turns a one-line product ask into a scoped plan: affected services, contract changes, risks and a test strategy |
 
 ---
