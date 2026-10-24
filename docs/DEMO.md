@@ -43,7 +43,7 @@
 | **Target** | A net-new product feature that cuts across services, for example stop and stop-limit orders (the engine today accepts only limit and market orders) |
 | **How** | Ask Devin for the specifics: how an order travels from the gateway over the bus to the book, and every place that would have to change |
 | **Showcases** | Devin turns a one-line product ask into a scoped plan: affected services, contract changes, risks and a test strategy |
-| **Measurable outcome** | On your code: a scope for one real roadmap item, measured by engineer sign-off |
+| **Measurable outcome** | Engineer sign-off on a scope for one of your roadmap items |
 
 ---
 
@@ -57,7 +57,7 @@
 |---|---|
 | **Target** | The feature scoped in stage 1, implemented end to end: bus command schema, matching engine, gateway API and the workstation order ticket |
 | **Showcases** | Devin writes the code across Java and TypeScript, adds tests, runs the stack, iterates on CI and opens a PR a human can review |
-| **Measurable outcome** | On your code: that roadmap item implemented, measured by PR merged, review rounds and time to PR |
+| **Measurable outcome** | That item shipped as a merged PR, tracked by review rounds and time to PR |
 
 ---
 
@@ -72,7 +72,7 @@
 | **Targets** | A SQL injection in `services/history-writer`; a timing-unsafe credential comparison in `services/auth-service`; an OS command injection in the legacy Perl/shell batch `services/eod-recon` |
 | **How they surface** | CodeQL ([`codeql.yml`](../.github/workflows/codeql.yml)) and the report-only scanners in [`security.yml`](../.github/workflows/security.yml) (npm audit, pip-audit, Semgrep), including the rule set for the Perl batch in [`.semgrep/legacy-batch.yml`](../.semgrep/legacy-batch.yml) |
 | **Showcases** | Devin reads scanner output, confirms each finding is real, and opens a tested fix PR per finding |
-| **Measurable outcome** | On your code: fixes for open scanner findings, measured by findings closed and a clean re-scan |
+| **Measurable outcome** | Your open scanner findings closed, confirmed by a clean re-scan |
 
 ---
 
@@ -86,7 +86,7 @@
 |---|---|
 | **Target** | A set of open bug tickets in [GitHub Issues](https://github.com/arthuryan-k/devin-demo/issues), written from the reporter's side: symptoms, not causes |
 | **Showcases** | Devin reproduces the problem, finds the root cause, and ships a fix with a regression test |
-| **Measurable outcome** | On your code: a set of real backlog bugs, measured by tickets closed with regression tests |
+| **Measurable outcome** | Real tickets from your backlog closed, each with a regression test |
 
 ---
 
@@ -101,7 +101,7 @@
 | **Dependencies** | Deliberately downgraded dependency pins with known CVEs (for example `services/market-data/requirements.txt`), plus an open backlog of Dependabot update PRs across npm, pip, Maven, Docker and GitHub Actions ([`dependabot.yml`](../.github/dependabot.yml)) |
 | **Tech debt** | `TODO`, `FIXME` and `HACK` markers left across services, for example `services/portfolio/portfolio/consumer.py`, `services/eod-recon/bin/eod_recon.pl` and `services/fix-gateway` |
 | **Showcases** | Devin groups and prioritizes the updates (security vs. routine vs. breaking major versions), opens PRs for the low-risk ones with CI green, and turns the debt markers into scoped, prioritized tickets, leaving the risky calls to a human |
-| **Measurable outcome** | On your code: dependency and debt backlog triage, measured by updates merged and CVEs cleared |
+| **Measurable outcome** | Your dependency and debt backlog triaged: updates merged, CVEs cleared |
 
 ---
 
@@ -117,7 +117,7 @@
 | **Scope** | Modernize to Java 17 (or port to QuickFIX/J): about 16 source files, plus the build and its CI job |
 | **Smaller alternative** | Port the legacy Perl/shell `services/eod-recon` batch to a modern language, keeping its report and clearing-file formats |
 | **Showcases** | Devin plans, executes and verifies the migration against the existing tests and the running stack |
-| **Measurable outcome** | On your code: one legacy module migrated, measured by existing tests passing with behavior unchanged |
+| **Measurable outcome** | One of your legacy modules migrated, with existing tests passing and behavior unchanged |
 
 ---
 
